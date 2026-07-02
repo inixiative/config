@@ -358,6 +358,51 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
         message: 'bun.lock untracked → commit the lockfile',
       });
     }
+
+    const lefthookPin = manifest.toolchain.lefthook;
+    if (lefthookPin && !DEP_FIELDS.some((field) => pkg[field]?.lefthook)) {
+      findings.push({
+        level: 'error',
+        message: `lefthook missing → devDependency ${lefthookPin}`,
+        fix: () => {
+          pkg.devDependencies ??= {};
+          pkg.devDependencies.lefthook = lefthookPin;
+          touch();
+        },
+      });
+    }
+    const lefthookPath = join(dir, 'lefthook.yml');
+    const lefthookStub = 'extends:\n  - node_modules/@inixiative/config/lefthook/base.yml\n';
+    if (!existsSync(lefthookPath)) {
+      findings.push({
+        level: 'error',
+        message: 'lefthook.yml missing → stub extending @inixiative/config/lefthook/base.yml',
+        fix: () => writeFileSync(lefthookPath, lefthookStub),
+      });
+    } else if (!readFileSync(lefthookPath, 'utf8').includes('lefthook/base.yml')) {
+      findings.push({
+        level: 'error',
+        message:
+          'lefthook.yml does not extend the shared hooks → replaced with extends stub (local hooks overwritten — review the diff)',
+        fix: () => writeFileSync(lefthookPath, lefthookStub),
+      });
+    }
+    if (!pkg.scripts?.prepare) {
+      findings.push({
+        level: 'error',
+        message: 'scripts.prepare missing → "lefthook install"',
+        fix: () => {
+          pkg.scripts ??= {};
+          pkg.scripts.prepare = 'lefthook install';
+          touch();
+        },
+      });
+    } else if (!pkg.scripts.prepare.includes('lefthook')) {
+      findings.push({
+        level: 'warn',
+        message: 'scripts.prepare does not run lefthook install — hooks will not auto-install',
+      });
+    }
   }
 
   for (const [name, blessed] of Object.entries(manifest.ecosystem)) {

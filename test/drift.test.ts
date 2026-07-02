@@ -140,6 +140,50 @@ describe('committed lockfile', () => {
   });
 });
 
+describe('lefthook standardization', () => {
+  test('enforces lefthook dep, config stub, and prepare script in git repos', () => {
+    const dir = clone('consumer-node');
+    Bun.spawnSync(['git', 'init'], { cwd: dir, stdout: 'ignore', stderr: 'ignore' });
+
+    const { findings, flush } = inspect(dir, manifest);
+    const messages = findings.map((finding) => finding.message);
+    expect(messages).toContainEqual(expect.stringContaining('lefthook missing'));
+    expect(messages).toContainEqual(expect.stringContaining('lefthook.yml missing'));
+    expect(messages).toContainEqual(expect.stringContaining('scripts.prepare missing'));
+
+    for (const finding of findings) finding.fix?.();
+    flush();
+
+    const pkg = readPkg(dir);
+    expect(pkg.devDependencies.lefthook).toBe('2.1.9');
+    expect(pkg.scripts.prepare).toBe('lefthook install');
+    expect(readFileSync(join(dir, 'lefthook.yml'), 'utf8')).toContain(
+      'node_modules/@inixiative/config/lefthook/base.yml',
+    );
+
+    const residual = inspect(dir, manifest).findings.map((finding) => finding.message);
+    expect(residual).not.toContainEqual(expect.stringContaining('lefthook'));
+    expect(residual).not.toContainEqual(expect.stringContaining('prepare'));
+  });
+
+  test('replaces a divergent lefthook.yml with the extends stub', () => {
+    const dir = clone('consumer-node');
+    Bun.spawnSync(['git', 'init'], { cwd: dir, stdout: 'ignore', stderr: 'ignore' });
+    writeFileSync(
+      join(dir, 'lefthook.yml'),
+      'pre-commit:\n  commands:\n    custom:\n      run: echo hi\n',
+    );
+
+    const { findings } = inspect(dir, manifest);
+    const divergent = findings.find((finding) =>
+      finding.message.includes('does not extend the shared hooks'),
+    );
+    expect(divergent).toBeDefined();
+    divergent?.fix?.();
+    expect(readFileSync(join(dir, 'lefthook.yml'), 'utf8')).toContain('lefthook/base.yml');
+  });
+});
+
 describe('drift detection and sync', () => {
   test('detects and fixes toolchain, packageManager, latest, and ecosystem drift', () => {
     const dir = clone('consumer-node');

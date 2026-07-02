@@ -12,6 +12,7 @@ Shared toolchain for the inixiative ecosystem: tsconfig/biome/tsup presets, a ve
 | `@inixiative/config/biome/base.json` | formatter + linter core (single quotes, lineWidth 100, recommended + strictness block) |
 | `@inixiative/config/biome/react.json` | overlay: hook dependency linting |
 | `@inixiative/config/tsup` | `node(options)` / `react(options)` build presets |
+| `@inixiative/config/lefthook/base.yml` | pre-commit hooks: typecheck + biome on staged files |
 
 Adoption is three stub files plus the devDependency:
 
@@ -55,7 +56,7 @@ bunx @inixiative/config scan  [root]
 bunx @inixiative/config train [root]
 ```
 
-`check` is read-only and exits non-zero on drift — run it in CI after a frozen-lockfile install. It verifies toolchain pins, `"latest"` ranges, `packageManager`/`.bun-version`, legacy `bun.lockb`, a committed (tracked, un-ignored) `bun.lock`, required scripts (`check`/`typecheck`/`lint`/`test`), stub `extends`, presence of this package, and for every ecosystem dependency that the declared range admits the blessed version and the lockfile actually resolves to it (the stale-lockfile class).
+`check` is read-only and exits non-zero on drift — run it in CI after a frozen-lockfile install. It verifies toolchain pins, `"latest"` ranges, `packageManager`/`.bun-version`, legacy `bun.lockb`, a committed (tracked, un-ignored) `bun.lock`, required scripts (`check`/`typecheck`/`lint`/`test`), lefthook (dep + `lefthook.yml` extending the shared hooks + `prepare` script; git repos only), stub `extends`, presence of this package, and for every ecosystem dependency that the declared range admits the blessed version and the lockfile actually resolves to it (the stale-lockfile class).
 
 `sync` applies every fix, re-locks via `bun install`, and runs `bun update` on stale ecosystem entries. It refuses to run on a dirty working tree without `--force`. The react preset is inferred from a `react` dependency; override with `--preset`. Missing scripts are filled with defaults; existing script bodies are never touched.
 

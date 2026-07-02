@@ -1,6 +1,6 @@
 {
   "name": "@inixiative/config",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shared toolchain for the inixiative ecosystem: tsconfig/biome/tsup presets, a version manifest (BOM), and a sync/check CLI",
   "type": "module",
   "license": "MIT",
@@ -19,6 +19,7 @@
     "dist",
     "tsconfig",
     "biome",
+    "lefthook",
     "versions.json",
     "README.md"
   ],
@@ -29,12 +30,14 @@
     "./tsconfig/react.json": "./tsconfig/react.json",
     "./biome/base.json": "./biome/base.json",
     "./biome/react.json": "./biome/react.json",
+    "./lefthook/base.yml": "./lefthook/base.yml",
     "./tsup": {
       "types": "./dist/tsup.d.ts",
       "import": "./dist/tsup.js"
     }
   },
   "scripts": {
+    "prepare": "lefthook install",
     "build": "tsup",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
@@ -47,6 +50,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.5.2",
     "@types/bun": "1.3.14",
+    "lefthook": "2.1.9",
     "tsup": "8.5.1",
     "typescript": "6.0.3"
   },
