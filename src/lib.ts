@@ -107,7 +107,7 @@ const tryParseJsonc = (text: string): Record<string, unknown> | null => {
 };
 
 const parseRange = (range: string): { op: '^' | '~' | '>=' | '='; version: string } | null => {
-  const match = range.match(/^(\^|~|>=)?\s*(\d+)\.(\d+)\.(\d+)(?:-[\w.]+)?$/);
+  const match = range.match(/^(\^|~|>=)?\s*(\d+)\.(\d+)\.(\d+)$/);
   if (!match) return null;
   return {
     op: (match[1] as '^' | '~' | '>=') ?? '=',
@@ -130,7 +130,9 @@ export const admits = (range: string, version: string): boolean | null => {
     if (parts.some((p) => p === true)) return true;
     return parts.includes(null) ? null : false;
   }
-  const parsed = parseRange(range.trim());
+  const target = range.trim();
+  if (version.includes('-')) return target === version ? true : null;
+  const parsed = parseRange(target);
   if (!parsed) return null;
   const cmp = compare(version, parsed.version);
   if (parsed.op === '=') return cmp === 0;
@@ -138,13 +140,23 @@ export const admits = (range: string, version: string): boolean | null => {
   if (cmp < 0) return false;
   const [major, minor] = parsed.version.split('.').map(Number);
   const [vMajor, vMinor] = version.split('.').map(Number);
-  if (parsed.op === '^') return major === 0 ? vMajor === 0 && vMinor === minor : vMajor === major;
+  if (parsed.op === '^') {
+    if (major > 0) return vMajor === major;
+    if (minor > 0) return vMajor === 0 && vMinor === minor;
+    return cmp === 0;
+  }
   return vMajor === major && vMinor === minor;
 };
 
-const lockedVersion = (lockText: string, name: string): string | null => {
-  const match = lockText.match(new RegExp(`"${name.replace(/\//g, '\\/')}@(\\d[^"]*)"`));
-  return match ? match[1] : null;
+export const lockedVersion = (lockText: string, name: string): string | null => {
+  const lock = tryParseJsonc(lockText);
+  const packages = lock?.packages;
+  if (!packages || typeof packages !== 'object') return null;
+  const entry = (packages as Record<string, unknown>)[name];
+  const spec = Array.isArray(entry) ? entry[0] : null;
+  if (typeof spec !== 'string' || !spec.startsWith(`${name}@`)) return null;
+  const version = spec.slice(name.length + 1);
+  return /^\d/.test(version) ? version : null;
 };
 
 export type RepoRef = { dir: string; name: string; pkg: PackageJson };
@@ -345,18 +357,47 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
         level: 'error',
         message: 'bun.lock missing → run bun install and commit the lockfile',
       });
-    } else if (spawnSync('git', ['check-ignore', '-q', 'bun.lock'], { cwd: dir }).status === 0) {
-      findings.push({
-        level: 'error',
-        message: 'bun.lock is gitignored → stop ignoring it and commit the lockfile',
-      });
-    } else if (
-      spawnSync('git', ['ls-files', '--error-unmatch', 'bun.lock'], { cwd: dir }).status !== 0
-    ) {
-      findings.push({
-        level: 'error',
-        message: 'bun.lock untracked → commit the lockfile',
-      });
+    } else {
+      const ignoreStatus = spawnSync('git', ['check-ignore', '-q', 'bun.lock'], {
+        cwd: dir,
+      }).status;
+      if (ignoreStatus === 0) {
+        findings.push({
+          level: 'error',
+          message: 'bun.lock is gitignored → removing the ignore rule; commit the lockfile',
+          fix: () => {
+            const gitignorePath = join(dir, '.gitignore');
+            if (!existsSync(gitignorePath)) return;
+            const kept = readFileSync(gitignorePath, 'utf8')
+              .split('\n')
+              .filter((line) => !/^\s*bun\.lockb?\s*$/.test(line));
+            writeFileSync(gitignorePath, kept.join('\n'));
+          },
+        });
+      } else if (ignoreStatus === 1) {
+        const trackedStatus = spawnSync('git', ['ls-files', '--error-unmatch', 'bun.lock'], {
+          cwd: dir,
+        }).status;
+        if (trackedStatus === 1) {
+          findings.push({
+            level: 'error',
+            message: 'bun.lock untracked → staging it; commit the lockfile',
+            fix: () => {
+              spawnSync('git', ['add', 'bun.lock'], { cwd: dir });
+            },
+          });
+        } else if (trackedStatus !== 0) {
+          findings.push({
+            level: 'warn',
+            message: 'git ls-files failed — cannot verify the lockfile is tracked',
+          });
+        }
+      } else {
+        findings.push({
+          level: 'warn',
+          message: 'git check-ignore failed — cannot verify the lockfile is not ignored',
+        });
+      }
     }
 
     const lefthookPin = manifest.toolchain.lefthook;

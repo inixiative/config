@@ -2,7 +2,15 @@ import { beforeAll, describe, expect, test } from 'bun:test';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { admits, discoverRepos, inspect, loadManifest, parseJsonc, topoOrder } from '../src/lib';
+import {
+  admits,
+  discoverRepos,
+  inspect,
+  loadManifest,
+  lockedVersion,
+  parseJsonc,
+  topoOrder,
+} from '../src/lib';
 
 const manifest = loadManifest();
 const fixtures = join(import.meta.dir, 'fixtures');
@@ -48,6 +56,54 @@ describe('admits', () => {
     expect(admits('^18.0.0 || ^19.0.0', '19.1.0')).toBe(true);
     expect(admits('^18.0.0 || ^19.0.0', '20.0.0')).toBe(false);
     expect(admits('workspace:*', '1.0.0')).toBe(null);
+  });
+
+  test('caret with zero major and zero minor pins the patch', () => {
+    expect(admits('^0.0.3', '0.0.3')).toBe(true);
+    expect(admits('^0.0.3', '0.0.5')).toBe(false);
+    expect(admits('^0.0.3', '0.1.0')).toBe(false);
+  });
+
+  test('prereleases never silently satisfy', () => {
+    expect(admits('^2.0.0', '2.0.0-rc.1')).toBe(null);
+    expect(admits('2.0.0-rc.1', '2.0.0-rc.1')).toBe(true);
+    expect(admits('^2.0.0-beta.1', '2.1.0')).toBe(null);
+  });
+});
+
+describe('lockedVersion', () => {
+  const lock = JSON.stringify({
+    lockfileVersion: 1,
+    packages: {
+      '@inixiative/atlas': [
+        '@inixiative/atlas@0.1.0',
+        '',
+        { dependencies: { '@inixiative/json-rules': '^2.11.1' } },
+        'sha512-a',
+      ],
+      '@inixiative/atlas/@inixiative/json-rules': [
+        '@inixiative/json-rules@2.11.1',
+        '',
+        {},
+        'sha512-b',
+      ],
+      '@inixiative/json-rules': ['@inixiative/json-rules@2.12.1', '', {}, 'sha512-c'],
+    },
+  });
+
+  test('reads the top-level entry, not a nested transitive one', () => {
+    expect(lockedVersion(lock, '@inixiative/json-rules')).toBe('2.12.1');
+  });
+
+  test('returns null for absent packages and non-registry specs', () => {
+    expect(lockedVersion(lock, '@inixiative/permissions')).toBe(null);
+    expect(
+      lockedVersion(
+        '{"packages": {"@inixiative/config": ["@inixiative/config@file:../config", {}]}}',
+        '@inixiative/config',
+      ),
+    ).toBe(null);
+    expect(lockedVersion('not json', '@inixiative/json-rules')).toBe(null);
   });
 });
 
@@ -120,23 +176,33 @@ describe('topoOrder', () => {
 });
 
 describe('committed lockfile', () => {
-  test('flags gitignored and untracked bun.lock in a git repo', () => {
+  test('flags and self-heals gitignored then untracked bun.lock in a git repo', () => {
     const dir = clone('consumer-node');
     const git = (args: string[]) =>
       Bun.spawnSync(['git', ...args], { cwd: dir, stdout: 'ignore', stderr: 'ignore' });
     git(['init']);
     writeFileSync(join(dir, 'bun.lock'), '{"packages": {}}');
-    writeFileSync(join(dir, '.gitignore'), 'node_modules\nbun.lock\n');
-    let messages = inspect(dir, manifest).findings.map((finding) => finding.message);
-    expect(messages).toContainEqual(expect.stringContaining('bun.lock is gitignored'));
+    writeFileSync(join(dir, '.gitignore'), 'node_modules\nbun.lockb\nbun.lock\n');
 
-    writeFileSync(join(dir, '.gitignore'), 'node_modules\n');
-    messages = inspect(dir, manifest).findings.map((finding) => finding.message);
-    expect(messages).toContainEqual(expect.stringContaining('bun.lock untracked'));
+    const ignored = inspect(dir, manifest).findings.find((finding) =>
+      finding.message.includes('bun.lock is gitignored'),
+    );
+    expect(ignored).toBeDefined();
+    ignored?.fix?.();
+    expect(readFileSync(join(dir, '.gitignore'), 'utf8')).not.toContain('bun.lock');
+    expect(readFileSync(join(dir, '.gitignore'), 'utf8')).toContain('node_modules');
+
+    const untracked = inspect(dir, manifest).findings.find((finding) =>
+      finding.message.includes('bun.lock untracked'),
+    );
+    expect(untracked).toBeDefined();
+    untracked?.fix?.();
+    const after = inspect(dir, manifest).findings.map((finding) => finding.message);
+    expect(after).not.toContainEqual(expect.stringContaining('bun.lock untracked'));
 
     rmSync(join(dir, 'bun.lock'));
-    messages = inspect(dir, manifest).findings.map((finding) => finding.message);
-    expect(messages).toContainEqual(expect.stringContaining('bun.lock missing'));
+    const missing = inspect(dir, manifest).findings.map((finding) => finding.message);
+    expect(missing).toContainEqual(expect.stringContaining('bun.lock missing'));
   });
 });
 
