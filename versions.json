@@ -9,7 +9,7 @@
   "required": ["@biomejs/biome", "typescript", "@types/bun"],
   "ecosystem": {
     "@inixiative/json-rules": "2.12.1",
-    "@inixiative/permissions": "0.3.0",
+    "@inixiative/permissions": "0.3.1",
     "@inixiative/transitions": "0.0.3",
     "@inixiative/rules-builder": "0.13.0",
     "@inixiative/prisma-map": "0.1.0",
