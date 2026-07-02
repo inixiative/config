@@ -1,0 +1,69 @@
+{
+  "name": "@inixiative/config",
+  "version": "0.1.0",
+  "description": "Shared toolchain for the inixiative ecosystem: tsconfig/biome/tsup presets, a version manifest (BOM), and a sync/check CLI",
+  "type": "module",
+  "license": "MIT",
+  "author": "Aron Greenspan",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/inixiative/config"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "inixiative-config": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "tsconfig",
+    "biome",
+    "versions.json",
+    "README.md"
+  ],
+  "exports": {
+    "./versions.json": "./versions.json",
+    "./tsconfig/base.json": "./tsconfig/base.json",
+    "./tsconfig/node.json": "./tsconfig/node.json",
+    "./tsconfig/react.json": "./tsconfig/react.json",
+    "./biome/base.json": "./biome/base.json",
+    "./biome/react.json": "./biome/react.json",
+    "./tsup": {
+      "types": "./dist/tsup.d.ts",
+      "import": "./dist/tsup.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "check": "bun run typecheck && bun run lint && bun run test",
+    "prepublishOnly": "bun run check && bun run build"
+  },
+  "packageManager": "bun@1.3.14",
+  "devDependencies": {
+    "@biomejs/biome": "2.5.2",
+    "@types/bun": "1.3.14",
+    "tsup": "8.5.1",
+    "typescript": "6.0.3"
+  },
+  "peerDependencies": {
+    "@biomejs/biome": ">=2.5.0",
+    "tsup": ">=8.0.0",
+    "typescript": ">=5.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@biomejs/biome": {
+      "optional": true
+    },
+    "tsup": {
+      "optional": true
+    },
+    "typescript": {
+      "optional": true
+    }
+  }
+}
