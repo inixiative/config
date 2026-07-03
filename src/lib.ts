@@ -210,7 +210,9 @@ export const discoverRepos = (
     const pkgPath = join(root, entry, 'package.json');
     if (!existsSync(pkgPath)) continue;
     const name = tryParseJsonc(readFileSync(pkgPath, 'utf8'))?.name;
-    if (typeof name === 'string' && name in manifest.ecosystem)
+    // config is in the BOM so consumers' checks validate it, but its own repo
+    // extends local paths, not itself — it is governed by its test suite, not the fleet walk.
+    if (typeof name === 'string' && name in manifest.ecosystem && name !== '@inixiative/config')
       repos.push({ dir: join(root, entry), name });
   }
   return repos.sort((a, b) => a.name.localeCompare(b.name));
@@ -451,7 +453,7 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
     for (const field of DEP_FIELDS) {
       const deps = pkg[field];
       const range = deps?.[name];
-      if (!range) continue;
+      if (!range || range.startsWith('file:') || range.startsWith('link:')) continue;
       const ok = admits(range, blessed);
       if (ok === false) {
         findings.push({

@@ -8,6 +8,7 @@ import {
   inspect,
   loadManifest,
   lockedVersion,
+  ownVersion,
   parseJsonc,
   topoOrder,
 } from '../src/lib';
@@ -139,10 +140,18 @@ describe('discoverRepos', () => {
     mkdirSync(join(root, 'unrelated'));
     writeFileSync(join(root, 'unrelated', 'package.json'), '{"name": "something-else"}');
     mkdirSync(join(root, 'no-pkg'));
+    mkdirSync(join(root, 'config'));
+    writeFileSync(join(root, 'config', 'package.json'), '{"name": "@inixiative/config"}');
 
     const repos = discoverRepos(root, manifest);
     expect(repos.map((repo) => repo.name)).toEqual(['@inixiative/json-rules']);
     expect(repos[0].dir).toBe(join(root, 'rules-checkout'));
+  });
+});
+
+describe('self-governance', () => {
+  test('BOM blesses the current config version', () => {
+    expect(manifest.ecosystem['@inixiative/config']).toBe(ownVersion());
   });
 });
 
