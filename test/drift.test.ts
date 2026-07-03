@@ -266,7 +266,11 @@ describe('drift detection and sync', () => {
     expect(messages).toContainEqual(expect.stringContaining('typescript ^5.0.0 → 6.0.3'));
     expect(messages).toContainEqual(expect.stringContaining('packageManager bun@1.3.10'));
     expect(messages).toContainEqual(expect.stringContaining('"latest"'));
-    expect(messages).toContainEqual(expect.stringContaining('does not admit blessed 2.12.1'));
+    expect(messages).toContainEqual(
+      expect.stringContaining(
+        `does not admit blessed ${manifest.ecosystem['@inixiative/json-rules']}`,
+      ),
+    );
     expect(messages).toContainEqual(expect.stringContaining('bun.lockb'));
 
     for (const finding of findings) finding.fix?.();
@@ -278,7 +282,9 @@ describe('drift detection and sync', () => {
     const synced = readPkg(dir);
     expect(synced.devDependencies.typescript).toBe('6.0.3');
     expect(synced.devDependencies['@types/bun']).toBe('1.3.14');
-    expect(synced.devDependencies['@inixiative/json-rules']).toBe('^2.12.1');
+    expect(synced.devDependencies['@inixiative/json-rules']).toBe(
+      `^${manifest.ecosystem['@inixiative/json-rules']}`,
+    );
     expect(synced.packageManager).toBe('bun@1.3.14');
   });
 

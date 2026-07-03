@@ -118,7 +118,8 @@ if (command === 'train') {
       bump.fix?.();
     }
     inspection.flush();
-    let touched = bumps.length > 0;
+    const bumped = bumps.length > 0;
+    const staleLock = inspection.findings.some((finding) => finding.kind === 'stale-lock');
 
     const remote = spawnSync('npm', ['view', `${repo.name}@latest`, 'version'], {
       encoding: 'utf8',
@@ -132,7 +133,7 @@ if (command === 'train') {
       continue;
     }
 
-    if (touched || ahead) {
+    if (bumped || ahead || staleLock) {
       const install = spawnSync('bun', ['install'], { cwd: repo.dir, stdio: 'inherit' });
       if (install.status !== 0) {
         console.error('✗ bun install failed — aborting train');
@@ -143,7 +144,6 @@ if (command === 'train') {
         .map((finding) => finding.name as string);
       if (stale.length > 0) {
         spawnSync('bun', ['update', ...new Set(stale)], { cwd: repo.dir, stdio: 'inherit' });
-        touched = true;
       }
       const check = spawnSync('bun', ['run', 'check'], { cwd: repo.dir, stdio: 'inherit' });
       if (check.status !== 0) {
@@ -152,7 +152,11 @@ if (command === 'train') {
       }
     }
 
-    if (touched) {
+    const mutated = spawnSync('git', ['status', '--porcelain', 'package.json', 'bun.lock'], {
+      cwd: repo.dir,
+      encoding: 'utf8',
+    });
+    if (mutated.status === 0 && mutated.stdout.trim().length > 0) {
       spawnSync('git', ['add', 'package.json', 'bun.lock'], { cwd: repo.dir });
       const commit = spawnSync(
         'git',
@@ -222,4 +226,8 @@ if (!flags.has('--no-install')) {
 }
 
 const final = inspect(dir, manifest, presetFlag);
-process.exit(report(final.findings) > 0 ? 1 : 0);
+const remaining = final.findings.filter((finding) => finding.fix);
+for (const finding of remaining) finding.fix?.();
+final.flush();
+const settled = remaining.length > 0 ? inspect(dir, manifest, presetFlag) : final;
+process.exit(report(settled.findings) > 0 ? 1 : 0);
