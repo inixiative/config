@@ -7,13 +7,13 @@
   "author": "Aron Greenspan",
   "repository": {
     "type": "git",
-    "url": "https://github.com/inixiative/config"
+    "url": "git+https://github.com/inixiative/config.git"
   },
   "publishConfig": {
     "access": "public"
   },
   "bin": {
-    "inixiative-config": "./dist/cli.js"
+    "inixiative-config": "dist/cli.js"
   },
   "files": [
     "dist",
