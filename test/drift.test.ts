@@ -8,6 +8,7 @@ import {
   inspect,
   loadManifest,
   lockedVersion,
+  missingRepos,
   ownVersion,
   parseJsonc,
   topoOrder,
@@ -152,6 +153,16 @@ describe('discoverRepos', () => {
 describe('self-governance', () => {
   test('BOM blesses the current config version', () => {
     expect(manifest.ecosystem['@inixiative/config']).toBe(ownVersion());
+  });
+});
+
+describe('missingRepos', () => {
+  test('names BOM entries without a checkout, never config itself', () => {
+    const allButTransitions = Object.keys(manifest.ecosystem)
+      .filter((name) => name !== '@inixiative/transitions')
+      .map((name) => ({ name }));
+    expect(missingRepos(allButTransitions, manifest)).toEqual(['@inixiative/transitions']);
+    expect(missingRepos([], manifest)).not.toContain('@inixiative/config');
   });
 });
 

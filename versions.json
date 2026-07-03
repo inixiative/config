@@ -13,7 +13,7 @@
     "@types/bun"
   ],
   "ecosystem": {
-    "@inixiative/config": "0.4.2",
+    "@inixiative/config": "0.5.0",
     "@inixiative/json-rules": "2.14.1",
     "@inixiative/permissions": "0.3.2",
     "@inixiative/transitions": "0.1.0",

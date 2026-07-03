@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
   compare,
@@ -7,7 +7,9 @@ import {
   type Finding,
   inspect,
   loadManifest,
+  missingRepos,
   type Preset,
+  packageRoot,
   topoOrder,
   writeManifest,
 } from './lib';
@@ -51,6 +53,44 @@ if (process.versions.bun && process.versions.bun !== manifest.bun) {
   console.log(`⚠ running bun ${process.versions.bun}, blessed is ${manifest.bun} (bun upgrade)`);
 }
 
+const git = (cwd: string, ...gitArgs: string[]) =>
+  spawnSync('git', gitArgs, { cwd, encoding: 'utf8' as const });
+
+const behindOrigin = (cwd: string): number => {
+  const behind = git(cwd, 'rev-list', '--count', 'HEAD..@{upstream}');
+  return behind.status === 0 ? Number(behind.stdout.trim()) : 0;
+};
+
+const staleCheckoutFindings = (cwd: string): Finding[] => {
+  git(cwd, 'fetch', '--quiet');
+  const behind = behindOrigin(cwd);
+  return behind > 0
+    ? [
+        {
+          level: 'error',
+          message: `checkout is ${behind} commit${behind === 1 ? '' : 's'} behind origin — local state is stale, pull before trusting findings`,
+        },
+      ]
+    : [];
+};
+
+const unmergedSessionBranches = (cwd: string): string[] => {
+  const branches = git(
+    cwd,
+    'branch',
+    '-r',
+    '--no-merged',
+    '@{upstream}',
+    '--list',
+    'origin/claude/*',
+  );
+  if (branches.status !== 0) return [];
+  return branches.stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+};
+
 if (command === 'check') {
   const { findings } = inspect(dir, manifest, presetFlag);
   process.exit(report(findings) > 0 ? 1 : 0);
@@ -62,21 +102,39 @@ if (command === 'scan') {
     console.error(`✗ no ecosystem repos found under ${dir}`);
     process.exit(1);
   }
+  const missing = missingRepos(repos, manifest);
   const drifted: string[] = [];
   for (const repo of repos) {
     console.log(`\n${repo.name} — ${repo.dir}`);
-    if (report(inspect(repo.dir, manifest).findings) > 0) drifted.push(repo.name);
+    const findings = [...staleCheckoutFindings(repo.dir), ...inspect(repo.dir, manifest).findings];
+    if (report(findings) > 0) drifted.push(repo.name);
+    for (const branch of unmergedSessionBranches(repo.dir)) {
+      console.log(`⚠ unmerged session branch: ${branch}`);
+    }
   }
+  if (missing.length > 0) console.error(`\n✗ no checkout found for: ${missing.join(', ')}`);
   console.log(
-    `\nscanned ${repos.length} repos: ${drifted.length === 0 ? 'all in sync' : `${drifted.length} drifted (${drifted.join(', ')})`}`,
+    `\nscanned ${repos.length} repos: ${drifted.length === 0 ? 'all in sync' : `${drifted.length} drifted (${drifted.join(', ')})`}${missing.length > 0 ? `, ${missing.length} missing` : ''}`,
   );
-  process.exit(drifted.length > 0 ? 1 : 0);
+  process.exit(drifted.length > 0 || missing.length > 0 ? 1 : 0);
 }
 
 if (command === 'train') {
   const order = topoOrder(dir, manifest);
   if (order.length === 0) {
     console.error(`✗ no ecosystem repos found under ${dir}`);
+    process.exit(1);
+  }
+  const missing = missingRepos(order, manifest);
+  if (missing.length > 0) {
+    console.error(
+      `✗ no checkout under ${dir} for: ${missing.join(', ')} — a partial train ships an incoherent set`,
+    );
+    process.exit(1);
+  }
+  git(packageRoot, 'fetch', '--quiet');
+  if (behindOrigin(packageRoot) > 0) {
+    console.error('✗ this config checkout is behind origin — its blessed set is stale; pull first');
     process.exit(1);
   }
   console.log(`train order: ${order.map((repo) => repo.name).join(' → ')}`);
@@ -100,15 +158,26 @@ if (command === 'train') {
       skipped.push(repo.name);
       continue;
     }
-    spawnSync('git', ['fetch', '--quiet'], { cwd: repo.dir });
-    const behind = spawnSync('git', ['rev-list', '--count', 'HEAD..@{upstream}'], {
-      cwd: repo.dir,
-      encoding: 'utf8',
-    });
-    if (behind.status === 0 && Number(behind.stdout.trim()) > 0) {
-      console.log('⚠ behind origin — pull first, skipping');
-      skipped.push(repo.name);
-      continue;
+    git(repo.dir, 'fetch', '--quiet');
+    for (const branch of unmergedSessionBranches(repo.dir)) {
+      console.log(`⚠ unmerged session branch: ${branch} — a bump may be hiding there`);
+    }
+    const behind = behindOrigin(repo.dir);
+    if (behind > 0) {
+      const localOnly = git(repo.dir, 'rev-list', '--count', '@{upstream}..HEAD');
+      if (localOnly.status === 0 && Number(localOnly.stdout.trim()) > 0) {
+        console.log('⚠ diverged from origin — reconcile first, skipping');
+        skipped.push(repo.name);
+        continue;
+      }
+      const ff = git(repo.dir, 'merge', '--ff-only', '@{upstream}');
+      if (ff.status !== 0) {
+        console.log('⚠ fast-forward to origin failed — reconcile first, skipping');
+        skipped.push(repo.name);
+        continue;
+      }
+      console.log(`↓ fast-forwarded to origin (+${behind})`);
+      repo.pkg = JSON.parse(readFileSync(join(repo.dir, 'package.json'), 'utf8'));
     }
 
     const inspection = inspect(repo.dir, manifest);

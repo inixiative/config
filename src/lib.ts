@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'no
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+export const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 export type Manifest = {
   bun: string;
@@ -216,6 +216,13 @@ export const discoverRepos = (
       repos.push({ dir: join(root, entry), name });
   }
   return repos.sort((a, b) => a.name.localeCompare(b.name));
+};
+
+export const missingRepos = (repos: { name: string }[], manifest: Manifest): string[] => {
+  const found = new Set(repos.map((repo) => repo.name));
+  return Object.keys(manifest.ecosystem).filter(
+    (name) => name !== '@inixiative/config' && !found.has(name),
+  );
 };
 
 const detectPreset = (pkg: PackageJson, override?: Preset): Preset => {
