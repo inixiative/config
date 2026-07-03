@@ -142,9 +142,13 @@ if (command === 'train') {
       const stale = inspect(repo.dir, manifest)
         .findings.filter((finding) => finding.kind === 'stale-lock' && finding.name)
         .map((finding) => finding.name as string);
-      if (stale.length > 0) {
-        spawnSync('bun', ['update', ...new Set(stale)], { cwd: repo.dir, stdio: 'inherit' });
-      }
+      // always refresh config itself alongside a re-lock — the consumer's CI runs
+      // `inixiative-config check` from the locked version, whose BOM must match
+      // the blessed set that drove this re-lock or the check goes incoherent.
+      spawnSync('bun', ['update', '@inixiative/config', ...new Set(stale)], {
+        cwd: repo.dir,
+        stdio: 'inherit',
+      });
       const check = spawnSync('bun', ['run', 'check'], { cwd: repo.dir, stdio: 'inherit' });
       if (check.status !== 0) {
         console.error(`✗ check failed in ${repo.name} — aborting train`);
