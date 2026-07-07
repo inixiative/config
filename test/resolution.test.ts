@@ -21,7 +21,7 @@ const must = (command: string[], cwd: string, label: string) => {
 
 beforeAll(() => {
   must(['bun', 'run', 'build'], repoRoot, 'build');
-  must(['bun', 'pm', 'pack'], repoRoot, 'pack');
+  must(['bun', 'pm', 'pack', '--ignore-scripts'], repoRoot, 'pack');
   const tarball = readdirSync(repoRoot).find(
     (name) => name.endsWith('.tgz') && name !== 'config.tgz',
   );
