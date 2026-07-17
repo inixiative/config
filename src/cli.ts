@@ -91,6 +91,15 @@ const unmergedSessionBranches = (cwd: string): string[] => {
     .filter(Boolean);
 };
 
+const offDefaultBranch = (cwd: string): { branch: string; main: string } | null => {
+  const branch = git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD');
+  if (branch.status !== 0) return null;
+  const head = git(cwd, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD');
+  const main = head.status === 0 ? head.stdout.trim().replace(/^origin\//, '') : 'main';
+  const current = branch.stdout.trim();
+  return current === main ? null : { branch: current, main };
+};
+
 if (command === 'check') {
   const { findings } = inspect(dir, manifest, presetFlag);
   process.exit(report(findings) > 0 ? 1 : 0);
@@ -106,7 +115,20 @@ if (command === 'scan') {
   const drifted: string[] = [];
   for (const repo of repos) {
     console.log(`\n${repo.name} — ${repo.dir}`);
-    const findings = [...staleCheckoutFindings(repo.dir), ...inspect(repo.dir, manifest).findings];
+    const off = offDefaultBranch(repo.dir);
+    const branchFindings: Finding[] = off
+      ? [
+          {
+            level: 'warn',
+            message: `checkout is on ${off.branch}, not ${off.main} — findings reflect the branch, not what ships`,
+          },
+        ]
+      : [];
+    const findings = [
+      ...branchFindings,
+      ...staleCheckoutFindings(repo.dir),
+      ...inspect(repo.dir, manifest).findings,
+    ];
     if (report(findings) > 0) drifted.push(repo.name);
     for (const branch of unmergedSessionBranches(repo.dir)) {
       console.log(`⚠ unmerged session branch: ${branch}`);
@@ -150,6 +172,14 @@ if (command === 'train') {
     });
     if (porcelain.status !== 0) {
       console.log('⚠ not a git checkout — skipping');
+      skipped.push(repo.name);
+      continue;
+    }
+    const off = offDefaultBranch(repo.dir);
+    if (off) {
+      console.log(
+        `⚠ on ${off.branch}, not ${off.main} — the train only ships the default branch, skipping`,
+      );
       skipped.push(repo.name);
       continue;
     }
