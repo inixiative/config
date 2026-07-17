@@ -1,6 +1,6 @@
 {
   "name": "@inixiative/config",
-  "version": "0.5.8",
+  "version": "0.5.9",
   "description": "Shared toolchain for the inixiative ecosystem: tsconfig/biome/tsup presets, a version manifest (BOM), and a sync/check CLI",
   "type": "module",
   "license": "MIT",
