@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, globSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -25,6 +25,12 @@ export type Finding = {
 export type Inspection = {
   findings: Finding[];
   flush: () => boolean;
+  /**
+   * Every package.json this inspection may rewrite, relative to the repo dir —
+   * the root plus each workspace member. The train stages exactly these, so a
+   * workspace bump cannot be written and then left out of the commit.
+   */
+  packagePaths: string[];
 };
 
 type DepField = 'dependencies' | 'devDependencies' | 'peerDependencies';
@@ -225,6 +231,31 @@ export const missingRepos = (repos: { name: string }[], manifest: Manifest): str
   );
 };
 
+/**
+ * Workspace member package.json paths, relative to the repo root.
+ *
+ * Ecosystem deps are declared per package.json, so a monorepo pins them in its
+ * workspace members (template's prisma-map dep lives in packages/db), not at the
+ * root. Reading only the root silently leaves those behind at release time.
+ */
+const workspacePackagePaths = (dir: string, pkg: PackageJson): string[] => {
+  const raw = pkg.workspaces;
+  const globs = Array.isArray(raw)
+    ? raw
+    : Array.isArray((raw as { packages?: string[] } | undefined)?.packages)
+      ? (raw as { packages: string[] }).packages
+      : [];
+  if (globs.length === 0) return [];
+
+  const paths = new Set<string>();
+  for (const pattern of globs) {
+    for (const match of globSync(`${pattern}/package.json`, { cwd: dir })) {
+      paths.add(match.split(sep).join('/'));
+    }
+  }
+  return [...paths].sort();
+};
+
 const detectPreset = (pkg: PackageJson, override?: Preset): Preset => {
   if (override) return override;
   const hasReact = DEP_FIELDS.some((field) => pkg[field]?.react !== undefined);
@@ -238,6 +269,7 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
     return {
       findings: [{ level: 'error', message: `no package.json in ${dir}` }],
       flush: () => false,
+      packagePaths: [],
     };
   }
   const pkg: PackageJson = JSON.parse(readFileSync(pkgPath, 'utf8'));
@@ -245,6 +277,19 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
   const touch = () => {
     pkgDirty = true;
   };
+
+  // Root plus workspace members. Only the ecosystem-range pass walks the members:
+  // toolchain pins, required scripts and packageManager are repo-level policy and
+  // stay rooted, but a dependency range is a fact of the package.json declaring it.
+  const members = workspacePackagePaths(dir, pkg).map((rel) => {
+    const abs = join(dir, rel);
+    return {
+      rel,
+      abs,
+      pkg: JSON.parse(readFileSync(abs, 'utf8')) as PackageJson,
+      dirty: false,
+    };
+  });
 
   for (const [name, pin] of Object.entries(manifest.toolchain)) {
     let present = false;
@@ -455,30 +500,43 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
     }
   }
 
+  const rangeTargets = [
+    { label: '', pkg, mark: touch },
+    ...members.map((member) => ({
+      label: `${member.rel}: `,
+      pkg: member.pkg,
+      mark: () => {
+        member.dirty = true;
+      },
+    })),
+  ];
+
   for (const [name, blessed] of Object.entries(manifest.ecosystem)) {
-    if (name === pkg.name) continue;
-    for (const field of DEP_FIELDS) {
-      const deps = pkg[field];
-      const range = deps?.[name];
-      if (!range || range.startsWith('file:') || range.startsWith('link:')) continue;
-      const ok = admits(range, blessed);
-      if (ok === false) {
-        findings.push({
-          level: 'error',
-          kind: 'ecosystem-range',
-          name,
-          message: `${name} ${field} range ${range} does not admit blessed ${blessed} → ^${blessed}`,
-          fix: () => {
-            deps[name] = `^${blessed}`;
-            touch();
-          },
-        });
-      }
-      if (ok === null) {
-        findings.push({
-          level: 'warn',
-          message: `${name} range ${range} not understood; verify manually against ${blessed}`,
-        });
+    for (const target of rangeTargets) {
+      if (name === target.pkg.name) continue;
+      for (const field of DEP_FIELDS) {
+        const deps = target.pkg[field];
+        const range = deps?.[name];
+        if (!range || range.startsWith('file:') || range.startsWith('link:')) continue;
+        const ok = admits(range, blessed);
+        if (ok === false) {
+          findings.push({
+            level: 'error',
+            kind: 'ecosystem-range',
+            name,
+            message: `${target.label}${name} ${field} range ${range} does not admit blessed ${blessed} → ^${blessed}`,
+            fix: () => {
+              deps[name] = `^${blessed}`;
+              target.mark();
+            },
+          });
+        }
+        if (ok === null) {
+          findings.push({
+            level: 'warn',
+            message: `${target.label}${name} range ${range} not understood; verify manually against ${blessed}`,
+          });
+        }
       }
     }
     const installed = pkg.dependencies?.[name] ?? pkg.devDependencies?.[name];
@@ -564,10 +622,19 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
 
   return {
     findings,
+    packagePaths: ['package.json', ...members.map((member) => member.rel)],
     flush: () => {
-      if (!pkgDirty) return false;
-      writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
-      return true;
+      let wrote = false;
+      if (pkgDirty) {
+        writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+        wrote = true;
+      }
+      for (const member of members) {
+        if (!member.dirty) continue;
+        writeFileSync(member.abs, `${JSON.stringify(member.pkg, null, 2)}\n`);
+        wrote = true;
+      }
+      return wrote;
     },
   };
 }

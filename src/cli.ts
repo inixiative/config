@@ -251,12 +251,16 @@ if (command === 'train') {
       }
     }
 
-    const mutated = spawnSync('git', ['status', '--porcelain', 'package.json', 'bun.lock'], {
+    // Stage exactly what the inspection owns — root package.json plus every
+    // workspace member — so a bump written into packages/* cannot be left out of
+    // the commit and silently un-released.
+    const tracked = [...inspection.packagePaths, 'bun.lock'];
+    const mutated = spawnSync('git', ['status', '--porcelain', '--', ...tracked], {
       cwd: repo.dir,
       encoding: 'utf8',
     });
     if (mutated.status === 0 && mutated.stdout.trim().length > 0) {
-      spawnSync('git', ['add', 'package.json', 'bun.lock'], { cwd: repo.dir });
+      spawnSync('git', ['add', '--', ...tracked], { cwd: repo.dir });
       const commit = spawnSync(
         'git',
         ['commit', '-m', 'chore: sync ecosystem deps to blessed set'],

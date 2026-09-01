@@ -377,3 +377,84 @@ describe('drift detection and sync', () => {
     expect(broken.findings.length).toBeGreaterThan(0);
   });
 });
+
+describe('workspace members', () => {
+  const blessed = Object.entries(manifest.ecosystem).find(
+    ([name]) => name !== '@inixiative/config',
+  );
+  const [ecoName, ecoVersion] = blessed as [string, string];
+
+  const makeWorkspace = (memberRange: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'inixiative-ws-'));
+    mkdirSync(join(dir, 'packages', 'db'), { recursive: true });
+    mkdirSync(join(dir, 'apps', 'web'), { recursive: true });
+    writePkg(dir, {
+      name: 'ws-root',
+      version: '1.0.0',
+      workspaces: ['packages/*', 'apps/*'],
+    });
+    writePkg(join(dir, 'packages', 'db'), {
+      name: 'ws-db',
+      version: '1.0.0',
+      dependencies: { [ecoName]: memberRange },
+    });
+    writePkg(join(dir, 'apps', 'web'), { name: 'ws-web', version: '1.0.0' });
+    return dir;
+  };
+
+  test('discovers root and every workspace member', () => {
+    const dir = makeWorkspace(`^${ecoVersion}`);
+    try {
+      expect(inspect(dir, manifest).packagePaths).toEqual([
+        'package.json',
+        'apps/web/package.json',
+        'packages/db/package.json',
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  test('flags a stale ecosystem range declared in a workspace member', () => {
+    const dir = makeWorkspace('^0.0.1');
+    try {
+      const { findings } = inspect(dir, manifest);
+      const stale = findings.filter((finding) => finding.kind === 'ecosystem-range');
+      expect(stale).toHaveLength(1);
+      // the member path is in the message, so the operator knows which file moved
+      expect(stale[0].message).toContain('packages/db/package.json');
+      expect(stale[0].message).toContain(ecoName);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  test('fix + flush rewrites the member and leaves clean files alone', () => {
+    const dir = makeWorkspace('^0.0.1');
+    try {
+      const inspection = inspect(dir, manifest);
+      const rootBefore = readFileSync(join(dir, 'package.json'), 'utf8');
+      // exactly what train does: apply only the ecosystem-range fixes
+      for (const finding of inspection.findings) {
+        if (finding.kind === 'ecosystem-range') finding.fix?.();
+      }
+      expect(inspection.flush()).toBe(true);
+
+      const member = JSON.parse(readFileSync(join(dir, 'packages', 'db', 'package.json'), 'utf8'));
+      expect(member.dependencies[ecoName]).toBe(`^${ecoVersion}`);
+      // root had nothing to change, so it must not be rewritten
+      expect(readFileSync(join(dir, 'package.json'), 'utf8')).toBe(rootBefore);
+      expect(inspect(dir, manifest).findings.filter((f) => f.kind === 'ecosystem-range')).toEqual(
+        [],
+      );
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  test('a repo without workspaces still reports only its root', () => {
+    expect(inspect(join(fixtures, 'consumer-node'), manifest).packagePaths).toEqual([
+      'package.json',
+    ]);
+  });
+});
