@@ -301,11 +301,11 @@ describe('drift detection and sync', () => {
 
     const synced = readPkg(dir);
     expect(synced.devDependencies.typescript).toBe('6.0.3');
-    expect(synced.devDependencies['@types/bun']).toBe('1.3.14');
+    expect(synced.devDependencies['@types/bun']).toBe(manifest.toolchain['@types/bun']);
     expect(synced.devDependencies['@inixiative/json-rules']).toBe(
       `^${manifest.ecosystem['@inixiative/json-rules']}`,
     );
-    expect(synced.packageManager).toBe('bun@1.3.14');
+    expect(synced.packageManager).toBe(`bun@${manifest.bun}`);
   });
 
   test('flags stale lockfile against declared range and blessed version', () => {
