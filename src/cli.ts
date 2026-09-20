@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
   compare,
@@ -8,6 +8,7 @@ import {
   inspect,
   loadManifest,
   missingRepos,
+  ownVersion,
   type Preset,
   packageRoot,
   topoOrder,
@@ -162,6 +163,7 @@ if (command === 'train') {
   console.log(`train order: ${order.map((repo) => repo.name).join(' → ')}`);
   const published: string[] = [];
   const skipped: string[] = [];
+  const committed: string[] = [];
   let bomDirty = false;
 
   for (const repo of order) {
@@ -270,6 +272,7 @@ if (command === 'train') {
         console.error(`✗ commit failed in ${repo.name} — aborting train`);
         process.exit(1);
       }
+      committed.push(repo.dir);
     }
 
     if (ahead) {
@@ -279,6 +282,13 @@ if (command === 'train') {
         console.error(`✗ publish failed for ${repo.name} — aborting train`);
         process.exit(1);
       }
+      if (!servedByRegistry(repo.name, localVersion)) {
+        console.error(
+          `✗ npm accepted ${repo.name}@${localVersion} but the registry does not serve it — aborting train`,
+        );
+        process.exit(1);
+      }
+      committed.push(repo.dir);
       manifest.ecosystem[repo.name] = localVersion;
       writeManifest(manifest);
       bomDirty = true;
@@ -290,10 +300,97 @@ if (command === 'train') {
 
   console.log(`\npublished: ${published.length === 0 ? 'nothing' : published.join(', ')}`);
   if (skipped.length > 0) console.log(`skipped: ${skipped.join(', ')}`);
-  if (bomDirty)
-    console.log('BOM updated in versions.json — commit @inixiative/config and publish it');
-  console.log('train does not push — review the commits it made, then push each repo');
+
+  // The BOM names the new state, so this package ships last: its own version blessed in the
+  // BOM, the fixtures following the blessed set, check, commit, publish.
+  if (bomDirty) {
+    const remote = spawnSync('npm', ['view', '@inixiative/config@latest', 'version'], {
+      encoding: 'utf8',
+    });
+    const remoteVersion = remote.status === 0 ? remote.stdout.trim() : null;
+    let version = ownVersion();
+    if (remoteVersion !== null && compare(version, remoteVersion) <= 0) {
+      version = bumpPatch(remoteVersion);
+      const pkgPath = join(packageRoot, 'package.json');
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+      pkg.version = version;
+      writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+    }
+    manifest.ecosystem['@inixiative/config'] = version;
+    writeManifest(manifest);
+    for (const fixture of fixtureDirs()) {
+      const inspection = inspect(fixture, manifest);
+      for (const finding of inspection.findings)
+        if (finding.kind === 'ecosystem-range') finding.fix?.();
+      inspection.flush();
+    }
+    const check = spawnSync('bun', ['run', 'check'], { cwd: packageRoot, stdio: 'inherit' });
+    if (check.status !== 0) {
+      console.error('✗ check failed in @inixiative/config — aborting before publish');
+      process.exit(1);
+    }
+    spawnSync('git', ['add', '--', 'package.json', 'versions.json', 'test/fixtures'], {
+      cwd: packageRoot,
+    });
+    const commit = spawnSync(
+      'git',
+      ['commit', '-m', `chore: bless ${published.join(', ')} — ${version}`],
+      {
+        cwd: packageRoot,
+        stdio: 'inherit',
+      },
+    );
+    if (commit.status !== 0) {
+      console.error('✗ commit failed in @inixiative/config — aborting before publish');
+      process.exit(1);
+    }
+    const publish = spawnSync('npm', ['publish'], { cwd: packageRoot, stdio: 'inherit' });
+    if (publish.status !== 0 || !servedByRegistry('@inixiative/config', version)) {
+      console.error('✗ publish failed for @inixiative/config');
+      process.exit(1);
+    }
+    committed.push(packageRoot);
+    console.log(`published: @inixiative/config@${version} — the BOM names the new state`);
+  }
+
+  if (flags.has('--push')) {
+    for (const repoDir of committed) {
+      const push = spawnSync('git', ['push'], { cwd: repoDir, stdio: 'inherit' });
+      if (push.status !== 0) {
+        console.error(`✗ push failed in ${repoDir}`);
+        process.exit(1);
+      }
+    }
+    console.log(`pushed: ${committed.length} repo${committed.length === 1 ? '' : 's'}`);
+  } else if (committed.length > 0) {
+    console.log('train does not push without --push — review its commits, then push:');
+    for (const repoDir of committed) console.log(`  git -C ${repoDir} push`);
+  }
   process.exit(0);
+}
+
+/** The registry can lag a publish by seconds; a version the train records must be one it serves. */
+function servedByRegistry(name: string, version: string): boolean {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const view = spawnSync('npm', ['view', `${name}@${version}`, 'version'], { encoding: 'utf8' });
+    if (view.status === 0 && view.stdout.trim() === version) return true;
+    Bun.sleepSync(3000);
+  }
+  return false;
+}
+
+function bumpPatch(version: string): string {
+  const [major, minor, patch] = version.split('.').map(Number);
+  return `${major}.${minor}.${(patch ?? 0) + 1}`;
+}
+
+/** Fixture packages under test/fixtures are consumers too; they follow the blessed set. */
+function fixtureDirs(): string[] {
+  const root = join(packageRoot, 'test', 'fixtures');
+  if (!existsSync(root)) return [];
+  return readdirSync(root)
+    .map((name) => join(root, name))
+    .filter((dir) => existsSync(join(dir, 'package.json')));
 }
 
 if (existsSync(join(dir, '.git')) && !flags.has('--force')) {
