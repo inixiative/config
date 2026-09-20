@@ -14,7 +14,7 @@
   ],
   "ecosystem": {
     "@inixiative/config": "0.5.31",
-    "@inixiative/json-rules": "2.24.0",
+    "@inixiative/json-rules": "2.25.0",
     "@inixiative/permissions": "0.3.2",
     "@inixiative/transitions": "0.1.0",
     "@inixiative/rules-builder": "0.28.0",
