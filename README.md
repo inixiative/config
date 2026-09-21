@@ -85,4 +85,4 @@ jobs:
 
 ## Release flow
 
-Publishing moves in dependency order (json-rules → permissions → transitions → rules-builder → config). `train` automates the whole walk, this package included. Downstream repos pick it up via `sync`.
+Publishing moves in dependency order (for example, json-rules → permissions → transitions → rules-builder), with config last. Archive is included in the ecosystem BOM and release train as a standalone MIT-licensed package. `train` automates the whole walk, this package included. Downstream repos pick it up via `sync`.
