@@ -1,17 +1,21 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import {
+  type Checkout,
   compare,
-  discoverRepos,
   type Finding,
   inspect,
+  isLane,
+  LANES,
+  type Lane,
+  laneSection,
   loadManifest,
-  missingRepos,
   ownVersion,
   type Preset,
   packageRoot,
-  topoOrder,
+  trainPlan,
   writeManifest,
 } from './lib';
 
@@ -21,18 +25,21 @@ const flags = new Set(args.filter((arg) => arg.startsWith('--')).map((arg) => ar
 const presetFlag = args.find((arg) => arg.startsWith('--preset='))?.split('=')[1] as
   | Preset
   | undefined;
+const laneFlag = args.find((arg) => arg.startsWith('--lane='))?.split('=')[1];
 const positional = args.slice(1).filter((arg) => !arg.startsWith('--'));
 const dir = resolve(positional[0] ?? '.');
 
 const usage = () => {
   console.log(
-    'Usage: inixiative-config <check|sync|scan|train> [dir] [--preset=base|node|react] [--force] [--no-install]',
+    'Usage: inixiative-config <check|sync|scan|train> [dir] [--preset=base|node|react] [--lane=primitives|agentic] [--force] [--no-install] [--push]',
   );
   process.exit(2);
 };
 
 if (!['check', 'sync', 'scan', 'train'].includes(command)) usage();
 if (presetFlag && !['base', 'node', 'react'].includes(presetFlag)) usage();
+if (laneFlag !== undefined && !isLane(laneFlag)) usage();
+const lanes: Lane[] = laneFlag && isLane(laneFlag) ? [laneFlag] : [...LANES];
 
 const manifest = loadManifest();
 
@@ -106,17 +113,24 @@ if (command === 'check') {
   process.exit(report(findings) > 0 ? 1 : 0);
 }
 
+const laneLabel = (checkout: Checkout): string =>
+  checkout.consumer
+    ? `consumer of ${checkout.consumer.lanes.join(' + ')}`
+    : `${checkout.lane} lane`;
+
 if (command === 'scan') {
-  const repos = discoverRepos(dir, manifest);
-  if (repos.length === 0) {
+  const plan = trainPlan(dir, manifest, lanes);
+  const checkouts = [...plan.lanes.flatMap((lane) => lane.checkouts), ...plan.consumers];
+  if (checkouts.length === 0) {
     console.error(`✗ no ecosystem repos found under ${dir}`);
     process.exit(1);
   }
-  const missing = missingRepos(repos, manifest);
+  const missing = [...plan.lanes.flatMap((lane) => lane.missing), ...plan.missingConsumers];
+  const ambiguous = [...plan.lanes.flatMap((lane) => lane.ambiguous), ...plan.ambiguousConsumers];
   const drifted: string[] = [];
-  for (const repo of repos) {
-    console.log(`\n${repo.name} — ${repo.dir}`);
-    const off = offDefaultBranch(repo.dir);
+  for (const checkout of checkouts) {
+    console.log(`\n${checkout.name} — ${checkout.dir} (${laneLabel(checkout)})`);
+    const off = offDefaultBranch(checkout.dir);
     const branchFindings: Finding[] = off
       ? [
           {
@@ -127,187 +141,310 @@ if (command === 'scan') {
       : [];
     const findings = [
       ...branchFindings,
-      ...staleCheckoutFindings(repo.dir),
-      ...inspect(repo.dir, manifest).findings,
+      ...staleCheckoutFindings(checkout.dir),
+      ...inspect(checkout.dir, manifest).findings,
     ];
-    if (report(findings) > 0) drifted.push(repo.name);
-    for (const branch of unmergedSessionBranches(repo.dir)) {
+    if (report(findings) > 0) drifted.push(checkout.name);
+    for (const branch of unmergedSessionBranches(checkout.dir)) {
       console.log(`⚠ unmerged session branch: ${branch}`);
     }
   }
   if (missing.length > 0) console.error(`\n✗ no checkout found for: ${missing.join(', ')}`);
+  for (const entry of ambiguous) {
+    console.error(`✗ ambiguous checkouts for ${entry.key}: ${entry.dirs.join(', ')}`);
+  }
   console.log(
-    `\nscanned ${repos.length} repos: ${drifted.length === 0 ? 'all in sync' : `${drifted.length} drifted (${drifted.join(', ')})`}${missing.length > 0 ? `, ${missing.length} missing` : ''}`,
+    `\nscanned ${checkouts.length} repos (${lanes.join(' + ')}): ${drifted.length === 0 ? 'all in sync' : `${drifted.length} drifted (${drifted.join(', ')})`}${missing.length > 0 ? `, ${missing.length} missing` : ''}${ambiguous.length > 0 ? `, ${ambiguous.length} ambiguous` : ''}`,
   );
-  process.exit(drifted.length > 0 || missing.length > 0 ? 1 : 0);
+  process.exit(drifted.length > 0 || missing.length > 0 || ambiguous.length > 0 ? 1 : 0);
 }
 
+/** Thrown to stop one lane (or one consumer) without stopping the train. */
+class Abort extends Error {}
+
 if (command === 'train') {
-  const order = topoOrder(dir, manifest);
-  if (order.length === 0) {
-    console.error(`✗ no ecosystem repos found under ${dir}`);
-    process.exit(1);
-  }
-  const missing = missingRepos(order, manifest);
-  if (missing.length > 0) {
-    console.error(
-      `✗ no checkout under ${dir} for: ${missing.join(', ')} — a partial train ships an incoherent set`,
-    );
-    process.exit(1);
-  }
   git(packageRoot, 'fetch', '--quiet');
   if (behindOrigin(packageRoot) > 0) {
     console.error('✗ this config checkout is behind origin — its blessed set is stale; pull first');
     process.exit(1);
   }
-  console.log(`train order: ${order.map((repo) => repo.name).join(' → ')}`);
-  const published: string[] = [];
+  const plan = trainPlan(dir, manifest, lanes);
+  if (plan.lanes.every((lane) => lane.checkouts.length === 0) && plan.consumers.length === 0) {
+    console.error(`✗ no ecosystem repos found under ${dir}`);
+    process.exit(1);
+  }
+
+  const blessed: string[] = [];
   const skipped: string[] = [];
-  const committed: string[] = [];
+  const failed: string[] = [];
+  const committed = new Set<string>();
+  const reviewBranches: { dir: string; branch: string; base: string }[] = [];
   let bomDirty = false;
 
-  for (const repo of order) {
-    console.log(`\n▸ ${repo.name} — ${repo.dir}`);
-    const porcelain = spawnSync('git', ['status', '--porcelain'], {
-      cwd: repo.dir,
-      encoding: 'utf8',
-    });
+  /** Default branch, clean, fast-forwarded to origin — or skipped with the reason printed. */
+  const ready = (checkout: Checkout): boolean => {
+    const porcelain = git(checkout.dir, 'status', '--porcelain');
     if (porcelain.status !== 0) {
       console.log('⚠ not a git checkout — skipping');
-      skipped.push(repo.name);
-      continue;
+      return false;
     }
-    const off = offDefaultBranch(repo.dir);
+    const off = offDefaultBranch(checkout.dir);
     if (off) {
       console.log(
         `⚠ on ${off.branch}, not ${off.main} — the train only ships the default branch, skipping`,
       );
-      skipped.push(repo.name);
-      continue;
+      return false;
     }
     if (porcelain.stdout.trim().length > 0) {
-      console.log('⚠ dirty working tree — commit or stash your work first, skipping');
-      skipped.push(repo.name);
-      continue;
+      console.log('⚠ dirty working tree — commit your work first, skipping');
+      return false;
     }
-    git(repo.dir, 'fetch', '--quiet');
-    for (const branch of unmergedSessionBranches(repo.dir)) {
+    git(checkout.dir, 'fetch', '--quiet');
+    for (const branch of unmergedSessionBranches(checkout.dir)) {
       console.log(`⚠ unmerged session branch: ${branch} — a bump may be hiding there`);
     }
-    const behind = behindOrigin(repo.dir);
+    const behind = behindOrigin(checkout.dir);
     if (behind > 0) {
-      const localOnly = git(repo.dir, 'rev-list', '--count', '@{upstream}..HEAD');
+      const localOnly = git(checkout.dir, 'rev-list', '--count', '@{upstream}..HEAD');
       if (localOnly.status === 0 && Number(localOnly.stdout.trim()) > 0) {
         console.log('⚠ diverged from origin — reconcile first, skipping');
-        skipped.push(repo.name);
-        continue;
+        return false;
       }
-      const ff = git(repo.dir, 'merge', '--ff-only', '@{upstream}');
-      if (ff.status !== 0) {
+      if (git(checkout.dir, 'merge', '--ff-only', '@{upstream}').status !== 0) {
         console.log('⚠ fast-forward to origin failed — reconcile first, skipping');
-        skipped.push(repo.name);
-        continue;
+        return false;
       }
       console.log(`↓ fast-forwarded to origin (+${behind})`);
-      repo.pkg = JSON.parse(readFileSync(join(repo.dir, 'package.json'), 'utf8'));
+      checkout.pkg = JSON.parse(readFileSync(join(checkout.dir, 'package.json'), 'utf8'));
     }
+    return true;
+  };
 
-    const inspection = inspect(repo.dir, manifest);
+  /** Bump ecosystem ranges to the blessed set; report whether anything moved or the lock is stale. */
+  const bumpRanges = (checkout: Checkout) => {
+    const inspection = inspect(checkout.dir, manifest);
     const bumps = inspection.findings.filter((finding) => finding.kind === 'ecosystem-range');
     for (const bump of bumps) {
       console.log(`  ${bump.message}`);
       bump.fix?.();
     }
     inspection.flush();
-    const bumped = bumps.length > 0;
-    const staleLock = inspection.findings.some((finding) => finding.kind === 'stale-lock');
+    return {
+      inspection,
+      bumped: bumps.length > 0,
+      staleLock: inspection.findings.some((finding) => finding.kind === 'stale-lock'),
+    };
+  };
 
-    const remote = spawnSync('npm', ['view', `${repo.name}@latest`, 'version'], {
-      encoding: 'utf8',
-    });
-    const remoteVersion = remote.status === 0 ? remote.stdout.trim() : null;
-    const localVersion = repo.pkg.version ?? '0.0.0';
-    const ahead = remoteVersion === null || compare(localVersion, remoteVersion) > 0;
-    if (remoteVersion && compare(localVersion, remoteVersion) < 0) {
-      console.log(`⚠ local ${localVersion} is behind npm ${remoteVersion} — pull first, skipping`);
-      skipped.push(repo.name);
-      continue;
+  /** Re-lock onto the blessed set and run the repo's own check. */
+  const relockAndCheck = (checkout: Checkout) => {
+    if (spawnSync('bun', ['install'], { cwd: checkout.dir, stdio: 'inherit' }).status !== 0) {
+      throw new Abort(`bun install failed in ${checkout.name}`);
     }
-
-    if (bumped || ahead || staleLock) {
-      const install = spawnSync('bun', ['install'], { cwd: repo.dir, stdio: 'inherit' });
-      if (install.status !== 0) {
-        console.error('✗ bun install failed — aborting train');
-        process.exit(1);
-      }
-      const stale = inspect(repo.dir, manifest)
-        .findings.filter((finding) => finding.kind === 'stale-lock' && finding.name)
-        .map((finding) => finding.name as string);
-      if (stale.length > 0) {
-        spawnSync('bun', ['update', ...new Set(stale)], { cwd: repo.dir, stdio: 'inherit' });
-      }
-      const check = spawnSync('bun', ['run', 'check'], { cwd: repo.dir, stdio: 'inherit' });
-      if (check.status !== 0) {
-        console.error(`✗ check failed in ${repo.name} — aborting train`);
-        process.exit(1);
-      }
+    const stale = inspect(checkout.dir, manifest)
+      .findings.filter((finding) => finding.kind === 'stale-lock' && finding.name)
+      .map((finding) => finding.name as string);
+    if (stale.length > 0) {
+      spawnSync('bun', ['update', ...new Set(stale)], { cwd: checkout.dir, stdio: 'inherit' });
     }
+    if (spawnSync('bun', ['run', 'check'], { cwd: checkout.dir, stdio: 'inherit' }).status !== 0) {
+      throw new Abort(`check failed in ${checkout.name}`);
+    }
+  };
 
-    // Stage exactly what the inspection owns — root package.json plus every
-    // workspace member — so a bump written into packages/* cannot be left out of
-    // the commit and silently un-released.
-    const tracked = [...inspection.packagePaths, 'bun.lock'];
-    const mutated = spawnSync('git', ['status', '--porcelain', '--', ...tracked], {
-      cwd: repo.dir,
-      encoding: 'utf8',
+  // Stage exactly what the inspection owns — root package.json plus every workspace member —
+  // so a bump written into packages/* cannot be left out of the commit and silently un-released.
+  const commitOwned = (checkout: Checkout, packagePaths: string[]): boolean => {
+    const tracked = [...packagePaths, 'bun.lock'];
+    const mutated = git(checkout.dir, 'status', '--porcelain', '--', ...tracked);
+    if (mutated.status !== 0 || mutated.stdout.trim().length === 0) return false;
+    if (git(checkout.dir, 'add', '--', ...tracked).status !== 0) {
+      throw new Abort(`git add failed in ${checkout.name} — is bun.lock ignored?`);
+    }
+    const commit = spawnSync('git', ['commit', '-m', 'chore: sync ecosystem deps to blessed set'], {
+      cwd: checkout.dir,
+      stdio: 'inherit',
     });
-    if (mutated.status === 0 && mutated.stdout.trim().length > 0) {
-      spawnSync('git', ['add', '--', ...tracked], { cwd: repo.dir });
-      const commit = spawnSync(
-        'git',
-        ['commit', '-m', 'chore: sync ecosystem deps to blessed set'],
-        { cwd: repo.dir, stdio: 'inherit' },
+    if (commit.status !== 0) throw new Abort(`commit failed in ${checkout.name}`);
+    return true;
+  };
+
+  /**
+   * A workspace member is packed by bun, which rewrites `workspace:` ranges to the versions
+   * being released, then published by npm so auth and OTP prompts behave like a root publish.
+   */
+  const publish = (checkout: Checkout, entry: { name: string; path: string }): boolean => {
+    if (entry.path === 'package.json') {
+      return spawnSync('npm', ['publish'], { cwd: checkout.dir, stdio: 'inherit' }).status === 0;
+    }
+    const memberDir = join(checkout.dir, dirname(entry.path));
+    const out = mkdtempSync(join(tmpdir(), 'inixiative-train-'));
+    try {
+      const pack = spawnSync('bun', ['pm', 'pack', '--destination', out], {
+        cwd: memberDir,
+        stdio: 'inherit',
+      });
+      const tarball = readdirSync(out).find((name) => name.endsWith('.tgz'));
+      if (pack.status !== 0 || !tarball) return false;
+      return (
+        spawnSync('npm', ['publish', join(out, tarball)], { cwd: memberDir, stdio: 'inherit' })
+          .status === 0
       );
-      if (commit.status !== 0) {
-        console.error(`✗ commit failed in ${repo.name} — aborting train`);
-        process.exit(1);
-      }
-      committed.push(repo.dir);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
     }
+  };
 
-    if (ahead) {
-      console.log(`publishing ${repo.name}@${localVersion} (npm has ${remoteVersion ?? 'none'})`);
-      const publish = spawnSync('npm', ['publish'], { cwd: repo.dir, stdio: 'inherit' });
-      if (publish.status !== 0) {
-        console.error(`✗ publish failed for ${repo.name} — aborting train`);
-        process.exit(1);
-      }
-      if (!servedByRegistry(repo.name, localVersion)) {
-        console.error(
-          `✗ npm accepted ${repo.name}@${localVersion} but the registry does not serve it — aborting train`,
+  const npmLatest = (name: string): string | null => {
+    const remote = spawnSync('npm', ['view', `${name}@latest`, 'version'], { encoding: 'utf8' });
+    return remote.status === 0 ? remote.stdout.trim() : null;
+  };
+
+  for (const { lane, checkouts, missing, ambiguous } of plan.lanes) {
+    console.log(
+      `\n═ ${lane} lane: ${checkouts.map((checkout) => checkout.name).join(' → ') || '(none)'}`,
+    );
+    const section = laneSection(manifest, lane);
+    const before = { ...section };
+    const laneBlessed: string[] = [];
+    try {
+      if (missing.length > 0) {
+        throw new Abort(
+          `no checkout under ${dir} for: ${missing.join(', ')} — a partial lane ships an incoherent set`,
         );
-        process.exit(1);
       }
-      committed.push(repo.dir);
-      manifest.ecosystem[repo.name] = localVersion;
-      writeManifest(manifest);
-      bomDirty = true;
-      published.push(`${repo.name}@${localVersion}`);
-    } else {
-      console.log(`✓ ${repo.name}@${localVersion} already on npm`);
+      if (ambiguous.length > 0) {
+        throw new Abort(
+          ambiguous
+            .map((entry) => `ambiguous checkouts for ${entry.key}: ${entry.dirs.join(', ')}`)
+            .join('; '),
+        );
+      }
+      for (const checkout of checkouts) {
+        console.log(`\n▸ ${checkout.name} — ${checkout.dir}`);
+        if (!ready(checkout)) {
+          skipped.push(checkout.name);
+          continue;
+        }
+        const { inspection, bumped, staleLock } = bumpRanges(checkout);
+        const releases = checkout.packages.map((entry) => {
+          const local =
+            (JSON.parse(readFileSync(join(checkout.dir, entry.path), 'utf8')).version as string) ??
+            '0.0.0';
+          const remote = npmLatest(entry.name);
+          return { entry, local, remote, ahead: remote === null || compare(local, remote) > 0 };
+        });
+        const behind = releases.find(
+          (release) => release.remote && compare(release.local, release.remote) < 0,
+        );
+        if (behind) {
+          console.log(
+            `⚠ ${behind.entry.name} local ${behind.local} is behind npm ${behind.remote} — pull first, skipping`,
+          );
+          skipped.push(checkout.name);
+          continue;
+        }
+        if (bumped || staleLock || releases.some((release) => release.ahead))
+          relockAndCheck(checkout);
+        if (commitOwned(checkout, inspection.packagePaths)) committed.add(checkout.dir);
+
+        for (const { entry, local, remote, ahead } of releases) {
+          if (ahead) {
+            console.log(`publishing ${entry.name}@${local} (npm has ${remote ?? 'none'})`);
+            if (!publish(checkout, entry)) throw new Abort(`publish failed for ${entry.name}`);
+            if (!servedByRegistry(entry.name, local)) {
+              throw new Abort(
+                `npm accepted ${entry.name}@${local} but the registry does not serve it`,
+              );
+            }
+          } else if (section[entry.name] === local) {
+            console.log(`✓ ${entry.name}@${local} already on npm and blessed`);
+            continue;
+          } else {
+            // Published outside the train, or by a train whose lane later failed: bless it now.
+            console.log(`✓ ${entry.name}@${local} already on npm — blessing it`);
+          }
+          section[entry.name] = local;
+          laneBlessed.push(`${entry.name}@${local}`);
+        }
+      }
+      if (laneBlessed.length > 0) {
+        writeManifest(manifest);
+        bomDirty = true;
+        blessed.push(...laneBlessed);
+      }
+      console.log(
+        `${lane} lane blessed: ${laneBlessed.length === 0 ? 'nothing new' : laneBlessed.join(', ')}`,
+      );
+    } catch (error) {
+      if (!(error instanceof Abort)) throw error;
+      for (const name of Object.keys(section)) delete section[name];
+      Object.assign(section, before);
+      failed.push(`${lane} lane`);
+      console.error(`✗ ${error.message} — ${lane} lane stopped; its BOM entries are unchanged`);
+      if (laneBlessed.length > 0) {
+        console.error(
+          `  published but not blessed: ${laneBlessed.join(', ')} — the next train blesses them`,
+        );
+      }
     }
   }
 
-  console.log(`\npublished: ${published.length === 0 ? 'nothing' : published.join(', ')}`);
+  // Consumers publish nothing. They follow every blessed set, after all lanes, and their
+  // changes go through review: committed on a branch, never onto the default branch.
+  if (plan.consumers.length > 0 || plan.missingConsumers.length > 0) {
+    console.log(
+      `\n═ consumers: ${plan.consumers.map((checkout) => checkout.name).join(' → ') || '(none)'}`,
+    );
+  }
+  for (const repo of plan.missingConsumers) {
+    console.error(`✗ no checkout under ${dir} for consumer ${repo}`);
+    failed.push(repo);
+  }
+  for (const entry of plan.ambiguousConsumers) {
+    console.error(`✗ ambiguous checkouts for consumer ${entry.key}: ${entry.dirs.join(', ')}`);
+    failed.push(entry.key);
+  }
+  for (const checkout of plan.consumers) {
+    console.log(`\n▸ ${checkout.name} — ${checkout.dir} (${laneLabel(checkout)})`);
+    if (!ready(checkout)) {
+      skipped.push(checkout.name);
+      continue;
+    }
+    try {
+      const { inspection, bumped, staleLock } = bumpRanges(checkout);
+      if (!bumped && !staleLock) {
+        console.log('✓ already on the blessed set');
+        continue;
+      }
+      relockAndCheck(checkout);
+      const base = offDefaultBranch(checkout.dir)?.main ?? currentBranch(checkout.dir);
+      const branch = freeBranch(
+        checkout.dir,
+        `train/ecosystem-sync-${new Date().toISOString().slice(0, 10)}`,
+      );
+      if (git(checkout.dir, 'switch', '-c', branch).status !== 0) {
+        throw new Abort(`could not create ${branch} in ${checkout.name}`);
+      }
+      if (commitOwned(checkout, inspection.packagePaths)) {
+        reviewBranches.push({ dir: checkout.dir, branch, base });
+        console.log(`committed on ${branch} for review; the checkout stays on it until merged`);
+      }
+    } catch (error) {
+      if (!(error instanceof Abort)) throw error;
+      failed.push(checkout.name);
+      console.error(`✗ ${error.message} — its working tree is left as is for inspection`);
+    }
+  }
+
+  console.log(`\nblessed: ${blessed.length === 0 ? 'nothing' : blessed.join(', ')}`);
   if (skipped.length > 0) console.log(`skipped: ${skipped.join(', ')}`);
+  if (failed.length > 0) console.log(`failed: ${failed.join(', ')}`);
 
   // The BOM names the new state, so this package ships last: its own version blessed in the
   // BOM, the fixtures following the blessed set, check, commit, publish.
   if (bomDirty) {
-    const remote = spawnSync('npm', ['view', '@inixiative/config@latest', 'version'], {
-      encoding: 'utf8',
-    });
-    const remoteVersion = remote.status === 0 ? remote.stdout.trim() : null;
+    const remoteVersion = npmLatest('@inixiative/config');
     let version = ownVersion();
     if (remoteVersion !== null && compare(version, remoteVersion) <= 0) {
       version = bumpPatch(remoteVersion);
@@ -334,11 +471,8 @@ if (command === 'train') {
     });
     const commit = spawnSync(
       'git',
-      ['commit', '-m', `chore: bless ${published.join(', ')} — ${version}`],
-      {
-        cwd: packageRoot,
-        stdio: 'inherit',
-      },
+      ['commit', '-m', `chore: bless ${blessed.join(', ')} — ${version}`],
+      { cwd: packageRoot, stdio: 'inherit' },
     );
     if (commit.status !== 0) {
       console.error('✗ commit failed in @inixiative/config — aborting before publish');
@@ -349,24 +483,54 @@ if (command === 'train') {
       console.error('✗ publish failed for @inixiative/config');
       process.exit(1);
     }
-    committed.push(packageRoot);
+    committed.add(packageRoot);
     console.log(`published: @inixiative/config@${version} — the BOM names the new state`);
   }
 
   if (flags.has('--push')) {
     for (const repoDir of committed) {
-      const push = spawnSync('git', ['push'], { cwd: repoDir, stdio: 'inherit' });
-      if (push.status !== 0) {
+      if (spawnSync('git', ['push'], { cwd: repoDir, stdio: 'inherit' }).status !== 0) {
         console.error(`✗ push failed in ${repoDir}`);
         process.exit(1);
       }
     }
-    console.log(`pushed: ${committed.length} repo${committed.length === 1 ? '' : 's'}`);
-  } else if (committed.length > 0) {
+    for (const { dir: repoDir, branch, base } of reviewBranches) {
+      const push = spawnSync('git', ['push', '-u', 'origin', branch], {
+        cwd: repoDir,
+        stdio: 'inherit',
+      });
+      const pr =
+        push.status === 0 &&
+        spawnSync('gh', ['pr', 'create', '--fill', '--base', base, '--head', branch], {
+          cwd: repoDir,
+          stdio: 'inherit',
+        }).status === 0;
+      if (!pr) console.error(`✗ could not push ${branch} and open its PR in ${repoDir}`);
+    }
+    console.log(`pushed: ${committed.size + reviewBranches.length} repos`);
+  } else if (committed.size > 0 || reviewBranches.length > 0) {
     console.log('train does not push without --push — review its commits, then push:');
     for (const repoDir of committed) console.log(`  git -C ${repoDir} push`);
+    for (const { dir: repoDir, branch, base } of reviewBranches) {
+      console.log(
+        `  git -C ${repoDir} push -u origin ${branch} && (cd ${repoDir} && gh pr create --fill --base ${base})`,
+      );
+    }
   }
-  process.exit(0);
+  process.exit(failed.length > 0 ? 1 : 0);
+}
+
+function currentBranch(cwd: string): string {
+  return git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim();
+}
+
+/** `name`, or `name-2`, `name-3`… when a branch of that name already exists. */
+function freeBranch(cwd: string, name: string): string {
+  const taken = (candidate: string) =>
+    git(cwd, 'rev-parse', '--verify', '--quiet', `refs/heads/${candidate}`).status === 0;
+  let candidate = name;
+  for (let n = 2; taken(candidate); n++) candidate = `${name}-${n}`;
+  return candidate;
 }
 
 /** The registry can lag a publish by seconds; a version the train records must be one it serves. */

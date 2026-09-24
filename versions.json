@@ -13,7 +13,7 @@
     "@types/bun"
   ],
   "ecosystem": {
-    "@inixiative/config": "0.5.35",
+    "@inixiative/config": "0.5.36",
     "@inixiative/json-rules": "2.25.0",
     "@inixiative/permissions": "0.3.2",
     "@inixiative/transitions": "0.1.0",
@@ -22,5 +22,29 @@
     "@inixiative/atlas": "0.1.1",
     "@inixiative/gloss": "0.0.4",
     "@inixiative/archive": "0.2.1"
+  },
+  "agentic": {
+    "@inixiative/agent-session": "0.2.0",
+    "@inixiative/foundry-core": "0.1.0",
+    "@inixiative/foundry": "0.1.0"
+  },
+  "consumers": {
+    "inixiative/template": {
+      "lanes": [
+        "primitives"
+      ]
+    },
+    "inixiative/kingdom": {
+      "lanes": [
+        "primitives",
+        "agentic"
+      ],
+      "upstream": "inixiative/template"
+    },
+    "inixiative/oracle": {
+      "lanes": [
+        "agentic"
+      ]
+    }
   }
 }

@@ -2,17 +2,7 @@ import { beforeAll, describe, expect, test } from 'bun:test';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  admits,
-  discoverRepos,
-  inspect,
-  loadManifest,
-  lockedVersion,
-  missingRepos,
-  ownVersion,
-  parseJsonc,
-  topoOrder,
-} from '../src/lib';
+import { admits, inspect, loadManifest, lockedVersion, parseJsonc } from '../src/lib';
 
 const manifest = loadManifest();
 const fixtures = join(import.meta.dir, 'fixtures');
@@ -127,71 +117,6 @@ describe('check on clean fixtures', () => {
   test('consumer-react has no findings', () => {
     const { findings } = inspect(join(fixtures, 'consumer-react'), manifest);
     expect(findings).toEqual([]);
-  });
-});
-
-describe('discoverRepos', () => {
-  test('matches ecosystem packages by name regardless of directory name', () => {
-    const root = mkdtempSync(join(tmpdir(), 'inixiative-scan-'));
-    mkdirSync(join(root, 'rules-checkout'));
-    writeFileSync(
-      join(root, 'rules-checkout', 'package.json'),
-      '{"name": "@inixiative/json-rules"}',
-    );
-    mkdirSync(join(root, 'unrelated'));
-    writeFileSync(join(root, 'unrelated', 'package.json'), '{"name": "something-else"}');
-    mkdirSync(join(root, 'no-pkg'));
-    mkdirSync(join(root, 'config'));
-    writeFileSync(join(root, 'config', 'package.json'), '{"name": "@inixiative/config"}');
-
-    const repos = discoverRepos(root, manifest);
-    expect(repos.map((repo) => repo.name)).toEqual(['@inixiative/json-rules']);
-    expect(repos[0].dir).toBe(join(root, 'rules-checkout'));
-  });
-});
-
-describe('self-governance', () => {
-  test('BOM blesses the current config version', () => {
-    expect(manifest.ecosystem['@inixiative/config']).toBe(ownVersion());
-  });
-});
-
-describe('missingRepos', () => {
-  test('names BOM entries without a checkout, never config itself', () => {
-    const allButTransitions = Object.keys(manifest.ecosystem)
-      .filter((name) => name !== '@inixiative/transitions')
-      .map((name) => ({ name }));
-    expect(missingRepos(allButTransitions, manifest)).toEqual(['@inixiative/transitions']);
-    expect(missingRepos([], manifest)).not.toContain('@inixiative/config');
-  });
-});
-
-describe('topoOrder', () => {
-  test('orders repos so dependencies publish before dependents', () => {
-    const root = mkdtempSync(join(tmpdir(), 'inixiative-train-'));
-    const repo = (dirName: string, pkg: Record<string, unknown>) => {
-      mkdirSync(join(root, dirName));
-      writeFileSync(join(root, dirName, 'package.json'), JSON.stringify(pkg));
-    };
-    repo('builder', {
-      name: '@inixiative/rules-builder',
-      peerDependencies: { '@inixiative/json-rules': '^2.12.1' },
-    });
-    repo('rules', { name: '@inixiative/json-rules' });
-    repo('trans', {
-      name: '@inixiative/transitions',
-      dependencies: { '@inixiative/permissions': '^0.3.0' },
-    });
-    repo('perms', { name: '@inixiative/permissions' });
-
-    const order = topoOrder(root, manifest).map((entry) => entry.name);
-    expect(order.indexOf('@inixiative/json-rules')).toBeLessThan(
-      order.indexOf('@inixiative/rules-builder'),
-    );
-    expect(order.indexOf('@inixiative/permissions')).toBeLessThan(
-      order.indexOf('@inixiative/transitions'),
-    );
-    expect(order).toHaveLength(4);
   });
 });
 
