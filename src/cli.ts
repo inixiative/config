@@ -15,6 +15,7 @@ import {
   ownVersion,
   type Preset,
   packageRoot,
+  staleUpdates,
   trainPlan,
   writeManifest,
 } from './lib';
@@ -241,11 +242,11 @@ if (command === 'train') {
     if (spawnSync('bun', ['install'], { cwd: checkout.dir, stdio: 'inherit' }).status !== 0) {
       throw new Abort(`bun install failed in ${checkout.name}`);
     }
-    const stale = inspect(checkout.dir, manifest)
-      .findings.filter((finding) => finding.kind === 'stale-lock' && finding.name)
-      .map((finding) => finding.name as string);
-    if (stale.length > 0) {
-      spawnSync('bun', ['update', ...new Set(stale)], { cwd: checkout.dir, stdio: 'inherit' });
+    for (const { cwd, names } of staleUpdates(
+      checkout.dir,
+      inspect(checkout.dir, manifest).findings,
+    )) {
+      spawnSync('bun', ['update', ...names], { cwd, stdio: 'inherit' });
     }
     if (spawnSync('bun', ['run', 'check'], { cwd: checkout.dir, stdio: 'inherit' }).status !== 0) {
       throw new Abort(`check failed in ${checkout.name}`);
@@ -576,18 +577,31 @@ const fixed = first.findings.filter((finding) => finding.fix).length;
 if (fixed > 0) console.log(`applied ${fixed} fix${fixed === 1 ? '' : 'es'}`);
 
 if (!flags.has('--no-install')) {
-  const install = spawnSync('bun', ['install'], { cwd: dir, stdio: 'inherit' });
-  if (install.status !== 0) {
-    console.error('✗ bun install failed');
-    process.exit(1);
+  // A removed member toolchain range leaves its copy linked in the member's node_modules, and
+  // neither `bun install` nor `--force` unlinks it; dropping the member's links makes bun relink.
+  const relinked = new Set(
+    first.findings.flatMap((finding) =>
+      finding.kind === 'member-toolchain' && finding.path ? [dirname(finding.path)] : [],
+    ),
+  );
+  for (const member of relinked) {
+    rmSync(join(dir, member, 'node_modules'), { recursive: true, force: true });
   }
-  const stale = inspect(dir, manifest, presetFlag)
-    .findings.filter((finding) => finding.kind === 'stale-lock' && finding.name)
-    .map((finding) => finding.name as string);
-  if (stale.length > 0) {
-    const update = spawnSync('bun', ['update', ...new Set(stale)], { cwd: dir, stdio: 'inherit' });
-    if (update.status !== 0) {
-      console.error('✗ bun update failed');
+  const install = (...extra: string[]) => {
+    if (spawnSync('bun', ['install', ...extra], { cwd: dir, stdio: 'inherit' }).status !== 0) {
+      console.error('✗ bun install failed');
+      process.exit(1);
+    }
+  };
+  install();
+  let installed = inspect(dir, manifest, presetFlag);
+  if (installed.findings.some((finding) => finding.kind === 'toolchain-lock')) {
+    install('--force');
+    installed = inspect(dir, manifest, presetFlag);
+  }
+  for (const { cwd, names } of staleUpdates(dir, installed.findings)) {
+    if (spawnSync('bun', ['update', ...names], { cwd, stdio: 'inherit' }).status !== 0) {
+      console.error(`✗ bun update failed in ${cwd}`);
       process.exit(1);
     }
   }

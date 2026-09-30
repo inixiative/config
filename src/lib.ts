@@ -84,8 +84,10 @@ export type Preset = 'base' | 'node' | 'react';
 export type Finding = {
   level: 'error' | 'warn';
   message: string;
-  kind?: 'stale-lock' | 'ecosystem-range';
+  kind?: 'stale-lock' | 'ecosystem-range' | 'member-toolchain' | 'toolchain-lock';
   name?: string;
+  /** The package.json declaring `name`, relative to the repo dir. */
+  path?: string;
   fix?: () => void;
 };
 
@@ -234,6 +236,36 @@ export const lockedVersion = (lockText: string, key: string, target = key): stri
   if (typeof spec !== 'string' || !spec.startsWith(`${target}@`)) return null;
   const version = spec.slice(target.length + 1);
   return /^\d/.test(version) ? version : null;
+};
+
+/** Every registry version a lockfile resolves for a package, under any key (nested copies included). */
+export const lockedCopies = (
+  lockText: string,
+  name: string,
+): { key: string; version: string }[] => {
+  const packages = tryParseJsonc(lockText)?.packages;
+  if (!packages || typeof packages !== 'object') return [];
+  return Object.entries(packages as Record<string, unknown>).flatMap(([key, entry]) => {
+    const spec = Array.isArray(entry) ? entry[0] : null;
+    if (typeof spec !== 'string' || !spec.startsWith(`${name}@`)) return [];
+    const version = spec.slice(name.length + 1);
+    return /^\d/.test(version) ? [{ key, version }] : [];
+  });
+};
+
+/** The peer range a toolchain pin is expressed as: a floor at the pinned major.minor. */
+export const peerFloor = (pin: string): string => {
+  const [major, minor] = pin.split('.');
+  return `>=${major}.${minor}.0`;
+};
+
+/** A peer range that admits a major below the pin's claims support the toolchain never tests. */
+const admitsOlderMajor = (range: string, pin: string): boolean => {
+  const pinMajor = Number(pin.split('.')[0]);
+  return range.split('||').some((part) => {
+    const parsed = parseRange(part.trim());
+    return !!parsed && Number(parsed.version.split('.')[0]) < pinMajor;
+  });
 };
 
 /** `npm:<name>@<range>` → its parts; any other spec → null. */
@@ -550,6 +582,23 @@ const workspacePackagePaths = (dir: string, pkg: PackageJson): string[] => {
   return [...paths].sort();
 };
 
+/**
+ * `bun update` for stale-lock findings, run in each declaring package's directory: bun refuses
+ * to update, from the root, a dependency only a workspace member declares.
+ */
+export const staleUpdates = (
+  dir: string,
+  findings: Finding[],
+): { cwd: string; names: string[] }[] => {
+  const groups = new Map<string, Set<string>>();
+  for (const finding of findings) {
+    if (finding.kind !== 'stale-lock' || !finding.name) continue;
+    const cwd = join(dir, dirname(finding.path ?? 'package.json'));
+    groups.set(cwd, (groups.get(cwd) ?? new Set()).add(finding.name));
+  }
+  return [...groups].map(([cwd, names]) => ({ cwd, names: [...names] }));
+};
+
 const detectPreset = (pkg: PackageJson, override?: Preset): Preset => {
   if (override) return override;
   const hasReact = DEP_FIELDS.some((field) => pkg[field]?.react !== undefined);
@@ -795,15 +844,87 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
   }
 
   const rangeTargets = [
-    { label: '', pkg, mark: touch },
+    { label: '', path: 'package.json', pkg, mark: touch },
     ...members.map((member) => ({
       label: `${member.rel}: `,
+      path: member.rel,
       pkg: member.pkg,
       mark: () => {
         member.dirty = true;
       },
     })),
   ];
+
+  // Toolchain packages are declared once, at the root, pinned exactly. A member's own range
+  // installs a second copy beside the pin (typescript@^5 under a 6.0.3 root) that its scripts
+  // silently run.
+  for (const [index, member] of members.entries()) {
+    const target = rangeTargets[index + 1];
+    for (const name of Object.keys(manifest.toolchain)) {
+      for (const field of ['dependencies', 'devDependencies'] as const) {
+        const deps = member.pkg[field];
+        if (!deps?.[name]) continue;
+        findings.push({
+          level: 'error',
+          kind: 'member-toolchain',
+          name,
+          path: member.rel,
+          message: `${member.rel}: ${name} declared in a workspace member → remove; the root pin applies`,
+          fix: () => {
+            delete deps[name];
+            target.mark();
+          },
+        });
+      }
+    }
+  }
+
+  for (const target of rangeTargets) {
+    const peers = target.pkg.peerDependencies;
+    for (const [name, pin] of Object.entries(manifest.toolchain)) {
+      const range = peers?.[name];
+      if (!range || !peers) continue;
+      const floor = peerFloor(pin);
+      const ok = admits(range, pin);
+      if (ok === null) {
+        findings.push({
+          level: 'warn',
+          message: `${target.label}${name} peer range ${range} not understood; verify it admits pinned ${pin}`,
+        });
+        continue;
+      }
+      const reason = !ok
+        ? `does not admit pinned ${pin}`
+        : admitsOlderMajor(range, pin)
+          ? `admits majors below pinned ${pin}`
+          : null;
+      if (!reason) continue;
+      findings.push({
+        level: 'error',
+        message: `${target.label}${name} peerDependencies range ${range} ${reason} → ${floor}`,
+        fix: () => {
+          peers[name] = floor;
+          target.mark();
+        },
+      });
+    }
+  }
+
+  if (lockText) {
+    for (const [name, pin] of Object.entries(manifest.toolchain)) {
+      const seen = new Set<string>();
+      for (const { key, version } of lockedCopies(lockText, name)) {
+        if (version === pin || seen.has(version)) continue;
+        seen.add(version);
+        findings.push({
+          level: 'error',
+          kind: 'toolchain-lock',
+          name,
+          message: `bun.lock resolves ${name}@${version} (${key}) beside the pinned ${pin} → re-lock`,
+        });
+      }
+    }
+  }
 
   const blessedSet = blessedVersions(manifest);
   const staleKeys = new Set<string>();
@@ -845,6 +966,7 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
             level: 'error',
             kind: 'stale-lock',
             name: key,
+            path: target.path,
             message: `${target.label}${key} locked at ${locked}, violating declared ${spec} (stale lockfile) → re-lock`,
           });
         } else if (locked && locked !== blessed) {
@@ -853,6 +975,7 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
             level: 'error',
             kind: 'stale-lock',
             name: key,
+            path: target.path,
             message: `${target.label}${key} locked at ${locked}, blessed is ${blessed} → re-lock`,
           });
         }
