@@ -534,13 +534,17 @@ function freeBranch(cwd: string, name: string): string {
 }
 
 /** The registry can lag a publish by seconds; a version the train records must be one it serves. */
+// npm now holds new versions for processing ("may take a few minutes") before serving them.
 function servedByRegistry(name: string, version: string): boolean {
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const view = spawnSync('npm', ['view', `${name}@${version}`, 'version'], { encoding: 'utf8' });
+  const deadline = Date.now() + 15 * 60_000;
+  while (true) {
+    const view = spawnSync('npm', ['view', `${name}@${version}`, 'version', '--prefer-online'], {
+      encoding: 'utf8',
+    });
     if (view.status === 0 && view.stdout.trim() === version) return true;
-    Bun.sleepSync(3000);
+    if (Date.now() >= deadline) return false;
+    Bun.sleepSync(10_000);
   }
-  return false;
 }
 
 function bumpPatch(version: string): string {
