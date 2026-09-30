@@ -1,0 +1,9 @@
+{
+  "name": "fixture-api",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@inixiative/permissions": "^0.3.2",
+    "fixture-lib": "workspace:*"
+  }
+}

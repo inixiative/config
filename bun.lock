@@ -13,8 +13,8 @@
       },
       "peerDependencies": {
         "@biomejs/biome": ">=2.5.0",
-        "tsup": ">=8.0.0",
-        "typescript": ">=5.9.0",
+        "tsup": ">=8.5.0",
+        "typescript": ">=6.0.0",
       },
       "optionalPeers": [
         "@biomejs/biome",

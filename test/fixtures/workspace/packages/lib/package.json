@@ -1,0 +1,11 @@
+{
+  "name": "fixture-lib",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@inixiative/json-rules": "^2.25.0"
+  },
+  "peerDependencies": {
+    "typescript": ">=6.0.0"
+  }
+}

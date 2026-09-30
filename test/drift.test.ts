@@ -2,7 +2,16 @@ import { beforeAll, describe, expect, test } from 'bun:test';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { admits, inspect, loadManifest, lockedVersion, parseJsonc } from '../src/lib';
+import {
+  admits,
+  inspect,
+  loadManifest,
+  lockedCopies,
+  lockedVersion,
+  parseJsonc,
+  peerFloor,
+  staleUpdates,
+} from '../src/lib';
 
 const manifest = loadManifest();
 const fixtures = join(import.meta.dir, 'fixtures');
@@ -116,6 +125,11 @@ describe('check on clean fixtures', () => {
 
   test('consumer-react has no findings', () => {
     const { findings } = inspect(join(fixtures, 'consumer-react'), manifest);
+    expect(findings).toEqual([]);
+  });
+
+  test('workspace has no findings', () => {
+    const { findings } = inspect(join(fixtures, 'workspace'), manifest);
     expect(findings).toEqual([]);
   });
 });
@@ -381,5 +395,150 @@ describe('workspace members', () => {
     expect(inspect(join(fixtures, 'consumer-node'), manifest).packagePaths).toEqual([
       'package.json',
     ]);
+  });
+});
+
+describe('toolchain in a workspace', () => {
+  const typescript = manifest.toolchain.typescript;
+  const lock = (packages: Record<string, string>) =>
+    JSON.stringify({
+      packages: Object.fromEntries(
+        Object.entries(packages).map(([key, spec]) => [key, [spec, '', {}, 'sha']]),
+      ),
+    });
+  const memberPath = (dir: string, member: string) => join(dir, member, 'package.json');
+  const readMember = (dir: string, member: string) =>
+    JSON.parse(readFileSync(memberPath(dir, member), 'utf8'));
+  const writeMember = (dir: string, member: string, pkg: Record<string, unknown>) =>
+    writeFileSync(memberPath(dir, member), `${JSON.stringify(pkg, null, 2)}\n`);
+
+  test('flags toolchain packages declared in a member and sync deletes them', () => {
+    const dir = clone('workspace');
+    const api = readMember(dir, 'apps/api');
+    api.devDependencies = { typescript: '^5', '@types/bun': 'latest', vitest: '^3.0.0' };
+    writeMember(dir, 'apps/api', api);
+    const rootBefore = readFileSync(join(dir, 'package.json'), 'utf8');
+
+    const { findings, flush } = inspect(dir, manifest);
+    expect(findings.map((finding) => finding.message)).toEqual([
+      'apps/api/package.json: typescript declared in a workspace member → remove; the root pin applies',
+      'apps/api/package.json: @types/bun declared in a workspace member → remove; the root pin applies',
+    ]);
+    for (const finding of findings) finding.fix?.();
+    flush();
+
+    expect(readMember(dir, 'apps/api').devDependencies).toEqual({ vitest: '^3.0.0' });
+    expect(readFileSync(join(dir, 'package.json'), 'utf8')).toBe(rootBefore);
+    expect(inspect(dir, manifest).findings).toEqual([]);
+  });
+
+  test('sync --no-install removes member toolchain entries', () => {
+    const dir = clone('workspace');
+    const lib = readMember(dir, 'packages/lib');
+    lib.devDependencies = { typescript: '^5.9.3' };
+    writeMember(dir, 'packages/lib', lib);
+    const sync = Bun.spawnSync(
+      ['bun', join(import.meta.dir, '..', 'src', 'cli.ts'), 'sync', dir, '--no-install'],
+      { stdout: 'pipe', stderr: 'pipe' },
+    );
+    expect(sync.stdout.toString()).toContain('✓ in sync');
+    expect(sync.exitCode).toBe(0);
+    expect(readMember(dir, 'packages/lib').devDependencies).toEqual({});
+  });
+
+  test('flags a lockfile resolving a toolchain package to a second version', () => {
+    const dir = clone('workspace');
+    writeFileSync(
+      join(dir, 'bun.lock'),
+      lock({
+        typescript: `typescript@${typescript}`,
+        'fixture-api/typescript': 'typescript@5.9.3',
+        'fixture-lib/typescript': 'typescript@5.9.3',
+        'typescript-eslint': 'typescript-eslint@8.0.0',
+      }),
+    );
+    const copies = inspect(dir, manifest).findings.filter(
+      (finding) => finding.kind === 'toolchain-lock',
+    );
+    expect(copies.map((finding) => finding.message)).toEqual([
+      `bun.lock resolves typescript@5.9.3 (fixture-api/typescript) beside the pinned ${typescript} → re-lock`,
+    ]);
+
+    writeFileSync(join(dir, 'bun.lock'), lock({ typescript: `typescript@${typescript}` }));
+    expect(inspect(dir, manifest).findings).toEqual([]);
+  });
+
+  test('lockedCopies reads every key, nested copies included', () => {
+    expect(
+      lockedCopies(
+        lock({
+          typescript: 'typescript@6.0.3',
+          'a/typescript': 'typescript@5.9.3',
+          'typescript-eslint': 'typescript-eslint@8.0.0',
+        }),
+        'typescript',
+      ),
+    ).toEqual([
+      { key: 'typescript', version: '6.0.3' },
+      { key: 'a/typescript', version: '5.9.3' },
+    ]);
+  });
+
+  test('stale locks update in the directory that declares them', () => {
+    const dir = clone('workspace');
+    const permissions = manifest.ecosystem['@inixiative/permissions'];
+    const pkg = readPkg(dir);
+    pkg.devDependencies['@inixiative/gloss'] = `^${manifest.ecosystem['@inixiative/gloss']}`;
+    writePkg(dir, pkg);
+    writeFileSync(
+      join(dir, 'bun.lock'),
+      lock({
+        '@inixiative/permissions': '@inixiative/permissions@0.3.0',
+        '@inixiative/gloss': '@inixiative/gloss@0.0.1',
+        typescript: `typescript@${typescript}`,
+      }),
+    );
+    const memberRange = readMember(dir, 'apps/api').dependencies['@inixiative/permissions'];
+    expect(memberRange).toBe(`^${permissions}`);
+    const { findings } = inspect(dir, manifest);
+    expect(staleUpdates(dir, findings)).toEqual([
+      { cwd: dir, names: ['@inixiative/gloss'] },
+      { cwd: join(dir, 'apps', 'api'), names: ['@inixiative/permissions'] },
+    ]);
+  });
+
+  test('peer ranges on toolchain packages must admit the pin, floored at its major', () => {
+    expect(peerFloor('6.0.3')).toBe('>=6.0.0');
+    expect(peerFloor('8.5.1')).toBe('>=8.5.0');
+    const dir = clone('workspace');
+    const pkg = readPkg(dir);
+    pkg.peerDependencies = { typescript: '>=5.9.0', tsup: '>=8.0.0', zod: '^4.0.0' };
+    writePkg(dir, pkg);
+    const lib = readMember(dir, 'packages/lib');
+    lib.peerDependencies = { typescript: '^5.0.0' };
+    writeMember(dir, 'packages/lib', lib);
+
+    const { findings, flush } = inspect(dir, manifest);
+    expect(findings.map((finding) => finding.message)).toEqual([
+      `typescript peerDependencies range >=5.9.0 admits majors below pinned ${typescript} → >=6.0.0`,
+      `packages/lib/package.json: typescript peerDependencies range ^5.0.0 does not admit pinned ${typescript} → >=6.0.0`,
+    ]);
+    for (const finding of findings) finding.fix?.();
+    flush();
+
+    expect(readPkg(dir).peerDependencies).toEqual({
+      typescript: '>=6.0.0',
+      tsup: '>=8.0.0',
+      zod: '^4.0.0',
+    });
+    expect(readMember(dir, 'packages/lib').peerDependencies).toEqual({ typescript: '>=6.0.0' });
+    expect(inspect(dir, manifest).findings).toEqual([]);
+  });
+
+  test('config holds its own peers to the rule', () => {
+    const own = readPkg(join(import.meta.dir, '..'));
+    for (const [name, range] of Object.entries(own.peerDependencies as Record<string, string>)) {
+      expect(range).toBe(peerFloor(manifest.toolchain[name]));
+    }
   });
 });
