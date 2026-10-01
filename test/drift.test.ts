@@ -498,8 +498,10 @@ describe('toolchain in a workspace', () => {
         typescript: `typescript@${typescript}`,
       }),
     );
+    // The fixture follows the blessed set by range, not by spelling: the train rewrites only a
+    // range that does not admit the blessed version, so a re-blessed patch keeps `^0.3.2`.
     const memberRange = readMember(dir, 'apps/api').dependencies['@inixiative/permissions'];
-    expect(memberRange).toBe(`^${permissions}`);
+    expect(admits(memberRange, permissions)).toBe(true);
     const { findings } = inspect(dir, manifest);
     expect(staleUpdates(dir, findings)).toEqual([
       { cwd: dir, names: ['@inixiative/gloss'] },
