@@ -233,6 +233,16 @@ describe('discover', () => {
     expect(checkouts.map((checkout) => checkout.name)).not.toContain('@inixiative/json-rules');
   });
 
+  test('a checkout directly under the root wins over one nested in a workspace folder', () => {
+    const root = ecosystemRoot();
+    clone(join(root, 'kingdom'), 'inixiative/kingdom', { name: 'kingdom', private: true });
+    const { checkouts, ambiguous } = discover(root, bom());
+    expect(ambiguous).toEqual([]);
+    expect(checkouts.find((checkout) => checkout.name === 'kingdom')?.dir).toBe(
+      join(root, 'kingdom'),
+    );
+  });
+
   test('names lane packages and consumers without a checkout', () => {
     const root = ecosystemRoot();
     const manifest = bom();

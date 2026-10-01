@@ -8,7 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -339,8 +339,9 @@ const candidateDirs = (root: string): string[] => {
  * Find the checkouts for the given lanes' packages and consumers. Packages match by name —
  * the root package or any workspace member — so directory names and layout never need
  * declaring; consumers are private apps and match by their origin's GitHub repo. When several
- * checkouts claim one key, only those with an origin remote count; if that still leaves more
- * than one, the key is ambiguous rather than guessed.
+ * checkouts claim one key, only those with an origin remote count, and a checkout directly under
+ * the root wins over one nested in a workspace folder (the older layout); if that still leaves
+ * more than one, the key is ambiguous rather than guessed.
  */
 export const discover = (
   root: string,
@@ -393,10 +394,12 @@ export const discover = (
   const chosen = new Map<string, Checkout>();
   const ambiguous: Discovery['ambiguous'] = [];
   for (const [key, candidates] of claims) {
-    const pool =
+    let pool =
       candidates.length > 1
         ? candidates.filter((candidate) => originRepo(candidate.dir))
         : candidates;
+    const direct = pool.filter((candidate) => dirname(candidate.dir) === resolve(root));
+    if (pool.length > 1 && direct.length === 1) pool = direct;
     if (pool.length === 1) chosen.set(pool[0].dir, pool[0]);
     else ambiguous.push({ key, dirs: candidates.map((candidate) => candidate.dir).sort() });
   }
