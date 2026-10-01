@@ -19,6 +19,7 @@ import {
   trainPlan,
   writeManifest,
 } from './lib';
+import { type Project, portsFor, projects } from './ports';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -32,11 +33,22 @@ const dir = resolve(positional[0] ?? '.');
 
 const usage = () => {
   console.log(
-    'Usage: inixiative-config <check|sync|scan|train> [dir] [--preset=base|node|react] [--lane=primitives|agentic] [--force] [--no-install] [--push]',
+    'Usage: inixiative-config <check|sync|scan|train> [dir] [--preset=base|node|react] [--lane=primitives|agentic] [--force] [--no-install] [--push]\n       inixiative-config ports [project]',
   );
   process.exit(2);
 };
 
+if (command === 'ports') {
+  const project = positional[0];
+  if (project !== undefined && !projects.includes(project as Project)) usage();
+  for (const name of project ? [project as Project] : projects)
+    console.log(
+      `${name}: ${Object.entries(portsFor(name))
+        .map(([service, port]) => `${service}=${port}`)
+        .join(' ')}`,
+    );
+  process.exit(0);
+}
 if (!['check', 'sync', 'scan', 'train'].includes(command)) usage();
 if (presetFlag && !['base', 'node', 'react'].includes(presetFlag)) usage();
 if (laneFlag !== undefined && !isLane(laneFlag)) usage();

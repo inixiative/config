@@ -1,0 +1,30 @@
+{
+  "$comment": "Local port registry. A project's port for a service is the service's default plus 100 times the project's block, so projects never collide and none uses a default. Add a project at the next free block; add a service with its usual default.",
+  "blockSize": 100,
+  "reserved": {
+    "5000": "macOS AirPlay Receiver",
+    "7000": "macOS AirPlay Receiver"
+  },
+  "services": {
+    "web": 3000,
+    "admin": 3001,
+    "superadmin": 3002,
+    "http": 4000,
+    "postgres": 5432,
+    "redis": 6379,
+    "api": 8000,
+    "muninn": 8475,
+    "muninnUi": 8476,
+    "minio": 9000,
+    "minioConsole": 9001
+  },
+  "projects": {
+    "template": 1,
+    "kingdom": 2,
+    "tribe": 3,
+    "zealot": 4,
+    "foundry": 5,
+    "oracle": 6,
+    "archive": 7
+  }
+}

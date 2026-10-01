@@ -66,7 +66,10 @@ bunx @inixiative/config check [dir] [--preset=base|node|react]
 bunx @inixiative/config sync  [dir] [--preset=...] [--force] [--no-install]
 bunx @inixiative/config scan  [root] [--lane=primitives|agentic]
 bunx @inixiative/config train [root] [--lane=primitives|agentic] [--push]
+bunx @inixiative/config ports [project]
 ```
+
+`ports` prints each project's local ports from `ports.json` (also exported as `@inixiative/config/ports.json`). A project's port for a service is the service's usual default plus 100 times the project's block, so no two projects collide and none sits on a default: Archive (block 7) serves HTTP on 4700 with Postgres on 6132; Kingdom (block 2) has web 3200, API 8200, Postgres 5632, Redis 6579. Reserved ports (macOS AirPlay on 5000 and 7000) are never assigned. Give a new project the next free block, and a new kind of service its usual default; the tests fail on any collision.
 
 `check` is read-only and exits non-zero on drift — run it in CI after a frozen-lockfile install. It verifies toolchain pins — declared once, at the root, pinned exactly: a workspace member declaring one is an error, and `bun.lock` must resolve each only to its pin (no second copy) — toolchain peer ranges (they must admit the pin and no older major; `sync` writes `>=<pin major>.<pin minor>.0`), `"latest"` ranges, `packageManager`/`.bun-version`, legacy `bun.lockb`, a committed (tracked, un-ignored) `bun.lock`, required scripts (`check`/`typecheck`/`lint`/`test`), lefthook (dep + `lefthook.yml` extending the shared hooks + `prepare` script; git repos only), stub `extends`, presence of this package, and for every ecosystem dependency — in the root or any workspace member, of either lane — that the declared range admits the blessed version and the lockfile actually resolves to it (the stale-lockfile class). An npm alias (`"@inixiative/session-archive": "npm:@inixiative/archive@^0.2.1"`) is held to its target's blessed version and rewritten as an alias; `workspace:`, `file:` and `link:` ranges are a repo linking itself and are left alone.
 

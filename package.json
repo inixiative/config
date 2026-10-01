@@ -21,7 +21,8 @@
     "biome",
     "lefthook",
     "versions.json",
-    "README.md"
+    "README.md",
+    "ports.json"
   ],
   "exports": {
     "./versions.json": "./versions.json",
@@ -34,7 +35,8 @@
     "./tsup": {
       "types": "./dist/tsup.d.ts",
       "import": "./dist/tsup.js"
-    }
+    },
+    "./ports.json": "./ports.json"
   },
   "scripts": {
     "prepare": "lefthook install",
