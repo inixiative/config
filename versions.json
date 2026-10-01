@@ -13,9 +13,9 @@
     "@types/bun"
   ],
   "ecosystem": {
-    "@inixiative/config": "0.5.43",
-    "@inixiative/json-rules": "2.25.0",
-    "@inixiative/permissions": "0.3.2",
+    "@inixiative/config": "0.5.44",
+    "@inixiative/json-rules": "2.26.0",
+    "@inixiative/permissions": "0.3.3",
     "@inixiative/transitions": "0.1.0",
     "@inixiative/rules-builder": "0.28.0",
     "@inixiative/prisma-map": "0.2.0",
