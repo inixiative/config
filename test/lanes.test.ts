@@ -29,9 +29,9 @@ const bom = (): Manifest => ({
   ecosystem: {
     '@inixiative/config': '9.9.9',
     '@inixiative/json-rules': '2.25.0',
-    '@inixiative/archive': '0.2.1',
   },
   agentic: {
+    '@inixiative/archive': '0.2.1',
     '@inixiative/agent-session': '0.2.0',
     '@inixiative/foundry-core': '0.1.0',
     '@inixiative/foundry': '0.1.0',
@@ -196,6 +196,7 @@ describe('discover', () => {
       'template',
     ]);
     expect(byName['@inixiative/json-rules'].lane).toBe('primitives');
+    expect(byName['@inixiative/archive'].lane).toBe('agentic');
     expect(byName['@inixiative/agent-session'].dir).toBe(join(root, 'agent-session'));
     const foundry = byName['@inixiative/foundry-monorepo'];
     expect(foundry.dir).toBe(join(root, 'foundry'));
@@ -213,12 +214,7 @@ describe('discover', () => {
   test('a lane selection discovers only its packages and consumers', () => {
     const root = ecosystemRoot();
     const names = discover(root, bom(), ['primitives']).checkouts.map((checkout) => checkout.name);
-    expect(names.sort()).toEqual([
-      '@inixiative/archive',
-      '@inixiative/json-rules',
-      'kingdom',
-      'template',
-    ]);
+    expect(names.sort()).toEqual(['@inixiative/json-rules', 'kingdom', 'template']);
   });
 
   test('two eligible checkouts of one package are ambiguous, not guessed', () => {
@@ -244,6 +240,7 @@ describe('discover', () => {
     const { checkouts } = discover(root, manifest);
     expect(missingFor(checkouts, manifest)).toEqual(['@inixiative/gloss']);
     expect(missingFor([], manifest, ['agentic'])).toEqual([
+      '@inixiative/archive',
       '@inixiative/agent-session',
       '@inixiative/foundry-core',
       '@inixiative/foundry',
@@ -288,6 +285,7 @@ describe('topoOrder', () => {
     const agentic = discover(root, bom(), ['agentic']).checkouts;
     expect(topoOrder(agentic).map((checkout) => checkout.name)).toEqual([
       '@inixiative/agent-session',
+      '@inixiative/archive',
       '@inixiative/foundry-monorepo',
     ]);
   });
@@ -306,6 +304,7 @@ describe('trainPlan', () => {
     expect(agentic.missing).toEqual([]);
     expect(agentic.checkouts.map((checkout) => checkout.name)).toEqual([
       '@inixiative/agent-session',
+      '@inixiative/archive',
       '@inixiative/foundry-monorepo',
     ]);
   });
