@@ -247,6 +247,21 @@ describe('drift detection and sync', () => {
     expect(synced.packageManager).toBe(`bun@${manifest.bun}`);
   });
 
+  test('an exact ecosystem pin moves to the blessed version and stays exact', () => {
+    const dir = clone('consumer-node');
+    const pkg = readPkg(dir);
+    pkg.devDependencies['@inixiative/json-rules'] = '2.6.0';
+    writePkg(dir, pkg);
+    const { findings, flush } = inspect(dir, manifest);
+    const pin = findings.find((finding) => finding.kind === 'ecosystem-range');
+    expect(pin?.message).toContain(`→ ${manifest.ecosystem['@inixiative/json-rules']}`);
+    pin?.fix?.();
+    flush();
+    expect(readPkg(dir).devDependencies['@inixiative/json-rules']).toBe(
+      manifest.ecosystem['@inixiative/json-rules'],
+    );
+  });
+
   test('flags stale lockfile against declared range and blessed version', () => {
     const dir = clone('consumer-node');
     writeFileSync(

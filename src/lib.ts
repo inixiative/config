@@ -944,13 +944,15 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
         const rewrite = (next: string) => (name === key ? next : `npm:${name}@${next}`);
         const ok = admits(range, blessed);
         if (ok === false) {
+          // An exact pin is a choice to pin: move the pin, never loosen it to a range.
+          const next = /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(range) ? blessed : `^${blessed}`;
           findings.push({
             level: 'error',
             kind: 'ecosystem-range',
             name,
-            message: `${target.label}${key} ${field} range ${spec} does not admit blessed ${blessed} → ${rewrite(`^${blessed}`)}`,
+            message: `${target.label}${key} ${field} range ${spec} does not admit blessed ${blessed} → ${rewrite(next)}`,
             fix: () => {
-              deps[key] = rewrite(`^${blessed}`);
+              deps[key] = rewrite(next);
               target.mark();
             },
           });

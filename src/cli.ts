@@ -249,8 +249,8 @@ if (command === 'train') {
     };
   };
 
-  /** Re-lock onto the blessed set and run the repo's own check. */
-  const relockAndCheck = (checkout: Checkout) => {
+  /** Re-lock onto the blessed set and, unless told otherwise, run the repo's own check. */
+  const relockAndCheck = (checkout: Checkout, check = true) => {
     if (spawnSync('bun', ['install'], { cwd: checkout.dir, stdio: 'inherit' }).status !== 0) {
       throw new Abort(`bun install failed in ${checkout.name}`);
     }
@@ -260,10 +260,15 @@ if (command === 'train') {
     )) {
       spawnSync('bun', ['update', ...names], { cwd, stdio: 'inherit' });
     }
-    if (spawnSync('bun', ['run', 'check'], { cwd: checkout.dir, stdio: 'inherit' }).status !== 0) {
+    if (
+      check &&
+      spawnSync('bun', ['run', 'check'], { cwd: checkout.dir, stdio: 'inherit' }).status !== 0
+    ) {
       throw new Abort(`check failed in ${checkout.name}`);
     }
   };
+  /** Checkouts this train brought onto the blessed set; they follow this package's own release. */
+  const followers: Checkout[] = [];
 
   // Stage exactly what the inspection owns — root package.json plus every workspace member —
   // so a bump written into packages/* cannot be left out of the commit and silently un-released.
@@ -360,6 +365,7 @@ if (command === 'train') {
         if (bumped || staleLock || releases.some((release) => release.ahead))
           relockAndCheck(checkout);
         if (commitOwned(checkout, inspection.packagePaths)) committed.add(checkout.dir);
+        followers.push(checkout);
 
         for (const { entry, local, remote, ahead } of releases) {
           if (ahead) {
@@ -439,6 +445,7 @@ if (command === 'train') {
       if (git(checkout.dir, 'switch', '-c', branch).status !== 0) {
         throw new Abort(`could not create ${branch} in ${checkout.name}`);
       }
+      followers.push(checkout);
       if (commitOwned(checkout, inspection.packagePaths)) {
         reviewBranches.push({ dir: checkout.dir, branch, base });
         console.log(`committed on ${branch} for review; the checkout stays on it until merged`);
@@ -498,6 +505,23 @@ if (command === 'train') {
     }
     committed.add(packageRoot);
     console.log(`published: @inixiative/config@${version} — the BOM names the new state`);
+
+    // Every checkout this train re-locked still pins the previous @inixiative/config, which
+    // `check` now reports as stale: bring each onto the release it just blessed.
+    for (const checkout of followers) {
+      try {
+        const { inspection, bumped, staleLock } = bumpRanges(checkout);
+        if (!bumped && !staleLock) continue;
+        relockAndCheck(checkout, false);
+        if (commitOwned(checkout, inspection.packagePaths) && !checkout.consumer)
+          committed.add(checkout.dir);
+        console.log(`✓ ${checkout.name} locked to @inixiative/config@${version}`);
+      } catch (error) {
+        if (!(error instanceof Abort)) throw error;
+        failed.push(checkout.name);
+        console.error(`✗ ${error.message} — re-lock onto @inixiative/config@${version} by hand`);
+      }
+    }
   }
 
   if (flags.has('--push')) {
