@@ -13,10 +13,10 @@
     "@types/bun"
   ],
   "ecosystem": {
-    "@inixiative/config": "0.5.48",
+    "@inixiative/config": "0.5.49",
     "@inixiative/json-rules": "2.27.0",
     "@inixiative/permissions": "0.3.4",
-    "@inixiative/transitions": "0.1.1",
+    "@inixiative/transitions": "0.2.0",
     "@inixiative/rules-builder": "0.28.0",
     "@inixiative/prisma-map": "0.2.0",
     "@inixiative/atlas": "0.1.1",
