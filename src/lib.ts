@@ -124,6 +124,10 @@ const REQUIRED_SCRIPTS: Record<string, string> = {
 
 const DEP_FIELDS: DepField[] = ['dependencies', 'devDependencies', 'peerDependencies'];
 
+// Deploy builds install from a source export with no .git, where a bare `lefthook install` fails.
+export const LEFTHOOK_PREPARE =
+  'if git rev-parse --git-dir >/dev/null 2>&1; then lefthook install; fi';
+
 export const loadManifest = (): Manifest =>
   JSON.parse(readFileSync(join(packageRoot, 'versions.json'), 'utf8'));
 
@@ -828,17 +832,28 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
         fix: () => writeFileSync(lefthookPath, lefthookStub),
       });
     }
-    if (!pkg.scripts?.prepare) {
+    const prepare = pkg.scripts?.prepare;
+    if (!prepare) {
       findings.push({
         level: 'error',
-        message: 'scripts.prepare missing → "lefthook install"',
+        message: `scripts.prepare missing → "${LEFTHOOK_PREPARE}"`,
         fix: () => {
           pkg.scripts ??= {};
-          pkg.scripts.prepare = 'lefthook install';
+          pkg.scripts.prepare = LEFTHOOK_PREPARE;
           touch();
         },
       });
-    } else if (!pkg.scripts.prepare.includes('lefthook')) {
+    } else if (prepare.includes('lefthook install') && !prepare.includes(LEFTHOOK_PREPARE)) {
+      findings.push({
+        level: 'error',
+        message: `scripts.prepare runs lefthook install unguarded (fails builds without .git) → "${LEFTHOOK_PREPARE}"`,
+        fix: () => {
+          pkg.scripts ??= {};
+          pkg.scripts.prepare = prepare.replace('lefthook install', LEFTHOOK_PREPARE);
+          touch();
+        },
+      });
+    } else if (!prepare.includes('lefthook')) {
       findings.push({
         level: 'warn',
         message: 'scripts.prepare does not run lefthook install — hooks will not auto-install',

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   admits,
   inspect,
+  LEFTHOOK_PREPARE,
   loadManifest,
   lockedCopies,
   lockedVersion,
@@ -181,13 +182,31 @@ describe('lefthook standardization', () => {
 
     const pkg = readPkg(dir);
     expect(pkg.devDependencies.lefthook).toBe('2.1.9');
-    expect(pkg.scripts.prepare).toBe('lefthook install');
+    expect(pkg.scripts.prepare).toBe(LEFTHOOK_PREPARE);
     expect(readFileSync(join(dir, 'lefthook.yml'), 'utf8')).toContain(
       'node_modules/@inixiative/config/lefthook/base.yml',
     );
 
     const residual = inspect(dir, manifest).findings.map((finding) => finding.message);
     expect(residual).not.toContainEqual(expect.stringContaining('lefthook'));
+    expect(residual).not.toContainEqual(expect.stringContaining('prepare'));
+  });
+
+  test('upgrades a bare lefthook install prepare to the git-guarded form', () => {
+    const dir = clone('consumer-node');
+    Bun.spawnSync(['git', 'init'], { cwd: dir, stdout: 'ignore', stderr: 'ignore' });
+    const pkg = readPkg(dir);
+    pkg.scripts = { ...pkg.scripts, prepare: 'lefthook install && bun run build' };
+    writeFileSync(join(dir, 'package.json'), JSON.stringify(pkg, null, 2));
+
+    const { findings, flush } = inspect(dir, manifest);
+    const unguarded = findings.find((finding) => finding.message.includes('unguarded'));
+    expect(unguarded).toBeDefined();
+    unguarded?.fix?.();
+    flush();
+
+    expect(readPkg(dir).scripts.prepare).toBe(`${LEFTHOOK_PREPARE} && bun run build`);
+    const residual = inspect(dir, manifest).findings.map((finding) => finding.message);
     expect(residual).not.toContainEqual(expect.stringContaining('prepare'));
   });
 
