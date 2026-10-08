@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { type CommandLine, parseCommandLine, UsageError } from './args';
 import {
+  acquireTrainLock,
   type Checkout,
   compare,
   type Finding,
@@ -182,6 +183,25 @@ if (command === 'train') {
     return planned;
   };
   if (dryRun) console.log('dry run: nothing is installed, written, committed, published or pushed');
+
+  if (!dryRun) {
+    const lock = acquireTrainLock(packageRoot, {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      lanes,
+      root: dir,
+    });
+    if (!lock.ok) {
+      const { pid, startedAt, lanes: held, root } = lock.heldBy;
+      console.error(
+        `✗ another train is running (pid ${pid}, lanes ${held.join(' + ')}, root ${root}, since ${startedAt}) — wait for it to finish; one train at a time`,
+      );
+      process.exit(1);
+    }
+    if (lock.reclaimed)
+      console.log(`⚠ took over a stale train lock (pid ${lock.reclaimed.pid} is gone)`);
+    process.on('exit', lock.release);
+  }
 
   git(packageRoot, 'fetch', '--quiet');
   if (behindOrigin(packageRoot) > 0) {

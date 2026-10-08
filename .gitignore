@@ -4,3 +4,5 @@ test/fixtures/*/bun.lock
 *.tgz
 *.log
 .DS_Store
+.train.lock
+.worktrees/

@@ -1081,3 +1081,43 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
     },
   };
 }
+
+/** Who holds the train lock: one train at a time shares this checkout's BOM and npm's version counter. */
+export type TrainLock = { pid: number; startedAt: string; lanes: readonly string[]; root: string };
+
+export const TRAIN_LOCK = '.train.lock';
+
+const isAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+};
+
+/**
+ * Take the train lock in `dir` (this package's checkout), or say who holds it. Two trains
+ * running at once race the BOM and npm's version counter — a second publish of the same config
+ * version is refused after the first reserves it, burning the number. A lock whose process is
+ * gone is stale and is taken over. Returns the release, which removes the lock only if it is ours.
+ */
+export const acquireTrainLock = (
+  dir: string,
+  holder: TrainLock,
+): { ok: true; release: () => void; reclaimed?: TrainLock } | { ok: false; heldBy: TrainLock } => {
+  const path = join(dir, TRAIN_LOCK);
+  let reclaimed: TrainLock | undefined;
+  if (existsSync(path)) {
+    const current = JSON.parse(readFileSync(path, 'utf8')) as TrainLock;
+    if (current.pid !== holder.pid && isAlive(current.pid)) return { ok: false, heldBy: current };
+    reclaimed = current;
+  }
+  writeFileSync(path, `${JSON.stringify(holder, null, 2)}\n`);
+  const release = () => {
+    if (!existsSync(path)) return;
+    const current = JSON.parse(readFileSync(path, 'utf8')) as TrainLock;
+    if (current.pid === holder.pid) rmSync(path);
+  };
+  return reclaimed ? { ok: true, release, reclaimed } : { ok: true, release };
+};
