@@ -65,7 +65,7 @@ TypeScript 6.0 notes, discovered by this repo's fixture suite:
 bunx @inixiative/config check [dir] [--preset=base|node|react]
 bunx @inixiative/config sync  [dir] [--preset=...] [--force] [--no-install]
 bunx @inixiative/config scan  [root] [--lane=primitives|agentic]
-bunx @inixiative/config train [root] [--lane=primitives|agentic] [--push]
+bunx @inixiative/config train [root] [--lane=primitives|agentic] [--push] [--dry-run]
 bunx @inixiative/config ports [project]
 ```
 
@@ -83,7 +83,9 @@ Lanes stand alone. A lane with a package missing a checkout, or claimed by ambig
 
 Consumers run once, after every selected lane, upstreams first, against the full blessed set: a consumer of both lanes ends coherent with both whichever lane ran. They get the same bump → re-lock → `check`, never a publish, and their changes go through review: the train commits them on a `train/ecosystem-sync-<date>` branch and leaves the checkout there until it is merged.
 
-When anything was blessed it then ships this package last, so the BOM names the new state: bumps its own patch version if npm already has the current one, blesses that version in the BOM, brings the `test/fixtures` consumers onto the blessed set, runs `check`, commits, publishes. Then every checkout the train re-locked (lane packages on their default branch, consumers on their review branch) is re-locked onto that new `@inixiative/config` and committed, so none is left pinning the previous release. It never pushes unless asked: pass `--push` to push every repo it committed to and open a PR for each consumer branch; otherwise it prints the commands.
+When anything was blessed it then ships this package last, so the BOM names the new state: bumps its own patch version if npm already has the current one, blesses that version in the BOM, brings the `test/fixtures` consumers onto the blessed set, runs `check`, commits, publishes. Then every checkout the train re-locked (lane packages on their default branch, consumers on their review branch) is re-locked onto that new `@inixiative/config` and committed, so none is left pinning the previous release. It never pushes unless asked: pass `--push` to push every repo it committed to and open a PR for each consumer branch; otherwise it prints the commands. `--dry-run` walks the same plan and prints each step it would take (range rewrites, re-locks and checks, commits, review branches, publishes, BOM blessings, pushes) without running any of them; it only fetches and reads git state and `npm view`.
+
+Each command accepts only its own flags. An unknown or misplaced flag (`--dryrun`, `--push` on `sync`) is a usage error and exits 2 before anything runs.
 
 Division of labor: this CLI owns the toolchain set, ecosystem coherence, stubs, and lockfile format. Renovate owns everything else plus bumping `@inixiative/config` itself, and must be fenced off the toolchain packages.
 

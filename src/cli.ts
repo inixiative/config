@@ -2,18 +2,17 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { type CommandLine, parseCommandLine, UsageError } from './args';
 import {
   type Checkout,
   compare,
   type Finding,
   inspect,
-  isLane,
   LANES,
   type Lane,
   laneSection,
   loadManifest,
   ownVersion,
-  type Preset,
   packageRoot,
   staleUpdates,
   trainPlan,
@@ -21,26 +20,26 @@ import {
 } from './lib';
 import { type Project, portsFor, projects } from './ports';
 
-const args = process.argv.slice(2);
-const command = args[0];
-const flags = new Set(args.filter((arg) => arg.startsWith('--')).map((arg) => arg.split('=')[0]));
-const presetFlag = args.find((arg) => arg.startsWith('--preset='))?.split('=')[1] as
-  | Preset
-  | undefined;
-const laneFlag = args.find((arg) => arg.startsWith('--lane='))?.split('=')[1];
-const positional = args.slice(1).filter((arg) => !arg.startsWith('--'));
-const dir = resolve(positional[0] ?? '.');
-
-const usage = () => {
-  console.log(
-    'Usage: inixiative-config <check|sync|scan|train> [dir] [--preset=base|node|react] [--lane=primitives|agentic] [--force] [--no-install] [--push]\n       inixiative-config ports [project]',
+let commandLine: CommandLine;
+try {
+  commandLine = parseCommandLine(process.argv.slice(2));
+} catch (error) {
+  if (!(error instanceof UsageError)) throw error;
+  console.error(`✗ ${error.message}`);
+  console.error(
+    'Usage: inixiative-config check [dir] [--preset=base|node|react]\n       inixiative-config sync [dir] [--preset=base|node|react] [--force] [--no-install]\n       inixiative-config scan [root] [--lane=primitives|agentic]\n       inixiative-config train [root] [--lane=primitives|agentic] [--push] [--dry-run]\n       inixiative-config ports [project]',
   );
   process.exit(2);
-};
+}
+const { command, positionals, preset: presetFlag, dryRun } = commandLine;
+const dir = resolve(positionals[0] ?? '.');
 
 if (command === 'ports') {
-  const project = positional[0];
-  if (project !== undefined && !projects.includes(project as Project)) usage();
+  const project = positionals[0];
+  if (project !== undefined && !projects.includes(project as Project)) {
+    console.error(`✗ unknown project: ${project} (${projects.join(', ')})`);
+    process.exit(2);
+  }
   for (const name of project ? [project as Project] : projects)
     console.log(
       `${name}: ${Object.entries(portsFor(name))
@@ -49,10 +48,7 @@ if (command === 'ports') {
     );
   process.exit(0);
 }
-if (!['check', 'sync', 'scan', 'train'].includes(command)) usage();
-if (presetFlag && !['base', 'node', 'react'].includes(presetFlag)) usage();
-if (laneFlag !== undefined && !isLane(laneFlag)) usage();
-const lanes: Lane[] = laneFlag && isLane(laneFlag) ? [laneFlag] : [...LANES];
+const lanes: Lane[] = commandLine.lane ? [commandLine.lane] : [...LANES];
 
 const manifest = loadManifest();
 
@@ -176,10 +172,26 @@ if (command === 'scan') {
 class Abort extends Error {}
 
 if (command === 'train') {
+  /**
+   * Every write the train makes — installs, checks, file edits, commits, branches, publishes,
+   * pushes — goes through here. A dry run prints what it would do and returns `planned`.
+   */
+  const effect = <T>(description: string, planned: T, run: () => T): T => {
+    if (!dryRun) return run();
+    console.log(`  [dry-run] would ${description}`);
+    return planned;
+  };
+  if (dryRun) console.log('dry run: nothing is installed, written, committed, published or pushed');
+
   git(packageRoot, 'fetch', '--quiet');
   if (behindOrigin(packageRoot) > 0) {
-    console.error('✗ this config checkout is behind origin — its blessed set is stale; pull first');
-    process.exit(1);
+    if (!dryRun) {
+      console.error(
+        '✗ this config checkout is behind origin — its blessed set is stale; pull first',
+      );
+      process.exit(1);
+    }
+    console.log('⚠ this config checkout is behind origin — the plan uses a stale blessed set');
   }
   const plan = trainPlan(dir, manifest, lanes);
   if (plan.lanes.every((lane) => lane.checkouts.length === 0) && plan.consumers.length === 0) {
@@ -223,12 +235,19 @@ if (command === 'train') {
         console.log('⚠ diverged from origin — reconcile first, skipping');
         return false;
       }
-      if (git(checkout.dir, 'merge', '--ff-only', '@{upstream}').status !== 0) {
+      const merged = effect(
+        `fast-forward to origin (+${behind}); the plan below reflects the local tree`,
+        true,
+        () => git(checkout.dir, 'merge', '--ff-only', '@{upstream}').status === 0,
+      );
+      if (!merged) {
         console.log('⚠ fast-forward to origin failed — reconcile first, skipping');
         return false;
       }
-      console.log(`↓ fast-forwarded to origin (+${behind})`);
-      checkout.pkg = JSON.parse(readFileSync(join(checkout.dir, 'package.json'), 'utf8'));
+      if (!dryRun) {
+        console.log(`↓ fast-forwarded to origin (+${behind})`);
+        checkout.pkg = JSON.parse(readFileSync(join(checkout.dir, 'package.json'), 'utf8'));
+      }
     }
     return true;
   };
@@ -237,11 +256,13 @@ if (command === 'train') {
   const bumpRanges = (checkout: Checkout) => {
     const inspection = inspect(checkout.dir, manifest);
     const bumps = inspection.findings.filter((finding) => finding.kind === 'ecosystem-range');
-    for (const bump of bumps) {
-      console.log(`  ${bump.message}`);
-      bump.fix?.();
+    for (const bump of bumps) console.log(`  ${bump.message}`);
+    if (bumps.length > 0) {
+      effect(`rewrite ${bumps.length} ecosystem range(s) to the blessed set`, undefined, () => {
+        for (const bump of bumps) bump.fix?.();
+        inspection.flush();
+      });
     }
-    inspection.flush();
     return {
       inspection,
       bumped: bumps.length > 0,
@@ -250,48 +271,72 @@ if (command === 'train') {
   };
 
   /** Re-lock onto the blessed set and, unless told otherwise, run the repo's own check. */
-  const relockAndCheck = (checkout: Checkout, check = true) => {
-    if (spawnSync('bun', ['install'], { cwd: checkout.dir, stdio: 'inherit' }).status !== 0) {
-      throw new Abort(`bun install failed in ${checkout.name}`);
-    }
-    for (const { cwd, names } of staleUpdates(
-      checkout.dir,
-      inspect(checkout.dir, manifest).findings,
-    )) {
-      spawnSync('bun', ['update', ...names], { cwd, stdio: 'inherit' });
-    }
-    if (
-      check &&
-      spawnSync('bun', ['run', 'check'], { cwd: checkout.dir, stdio: 'inherit' }).status !== 0
-    ) {
-      throw new Abort(`check failed in ${checkout.name}`);
-    }
-  };
+  const relockAndCheck = (checkout: Checkout, check = true) =>
+    effect(`re-lock ${checkout.name}${check ? ' and run its check' : ''}`, undefined, () => {
+      if (spawnSync('bun', ['install'], { cwd: checkout.dir, stdio: 'inherit' }).status !== 0) {
+        throw new Abort(`bun install failed in ${checkout.name}`);
+      }
+      for (const { cwd, names } of staleUpdates(
+        checkout.dir,
+        inspect(checkout.dir, manifest).findings,
+      )) {
+        spawnSync('bun', ['update', ...names], { cwd, stdio: 'inherit' });
+      }
+      if (
+        check &&
+        spawnSync('bun', ['run', 'check'], { cwd: checkout.dir, stdio: 'inherit' }).status !== 0
+      ) {
+        throw new Abort(`check failed in ${checkout.name}`);
+      }
+    });
   /** Checkouts this train brought onto the blessed set; they follow this package's own release. */
   const followers: Checkout[] = [];
 
   // Stage exactly what the inspection owns — root package.json plus every workspace member —
   // so a bump written into packages/* cannot be left out of the commit and silently un-released.
-  const commitOwned = (checkout: Checkout, packagePaths: string[]): boolean => {
-    const tracked = [...packagePaths, 'bun.lock'];
-    const mutated = git(checkout.dir, 'status', '--porcelain', '--', ...tracked);
-    if (mutated.status !== 0 || mutated.stdout.trim().length === 0) return false;
-    if (git(checkout.dir, 'add', '--', ...tracked).status !== 0) {
-      throw new Abort(`git add failed in ${checkout.name} — is bun.lock ignored?`);
-    }
-    const commit = spawnSync('git', ['commit', '-m', 'chore: sync ecosystem deps to blessed set'], {
-      cwd: checkout.dir,
-      stdio: 'inherit',
+  // A dry run wrote nothing, so `changes` (did this checkout bump or re-lock) stands in for git.
+  const commitOwned = (checkout: Checkout, packagePaths: string[], changes: boolean): boolean => {
+    if (dryRun && !changes) return false;
+    return effect(`commit its package.json files + bun.lock in ${checkout.name}`, true, () => {
+      const tracked = [...packagePaths, 'bun.lock'];
+      const mutated = git(checkout.dir, 'status', '--porcelain', '--', ...tracked);
+      if (mutated.status !== 0 || mutated.stdout.trim().length === 0) return false;
+      if (git(checkout.dir, 'add', '--', ...tracked).status !== 0) {
+        throw new Abort(`git add failed in ${checkout.name} — is bun.lock ignored?`);
+      }
+      const commit = spawnSync(
+        'git',
+        ['commit', '-m', 'chore: sync ecosystem deps to blessed set'],
+        {
+          cwd: checkout.dir,
+          stdio: 'inherit',
+        },
+      );
+      if (commit.status !== 0) throw new Abort(`commit failed in ${checkout.name}`);
+      return true;
     });
-    if (commit.status !== 0) throw new Abort(`commit failed in ${checkout.name}`);
-    return true;
   };
 
   /**
    * A workspace member is packed by bun, which rewrites `workspace:` ranges to the versions
    * being released, then published by npm so auth and OTP prompts behave like a root publish.
    */
-  const publish = (checkout: Checkout, entry: { name: string; path: string }): boolean => {
+  const publish = (
+    checkout: Checkout,
+    entry: { name: string; path: string },
+    version: string,
+    remote: string | null,
+  ) =>
+    effect(`publish ${entry.name}@${version} to npm (npm has ${remote ?? 'none'})`, true, () => {
+      console.log(`publishing ${entry.name}@${version} (npm has ${remote ?? 'none'})`);
+      if (!publishToNpm(checkout, entry)) throw new Abort(`publish failed for ${entry.name}`);
+      if (!servedByRegistry(entry.name, version)) {
+        throw new Abort(`npm accepted ${entry.name}@${version} but the registry does not serve it`);
+      }
+      return true;
+    });
+
+  const publishToNpm = (checkout: Checkout, entry: { name: string; path: string }): boolean => {
     if (entry.path === 'package.json') {
       return spawnSync('npm', ['publish'], { cwd: checkout.dir, stdio: 'inherit' }).status === 0;
     }
@@ -362,20 +407,14 @@ if (command === 'train') {
           skipped.push(checkout.name);
           continue;
         }
-        if (bumped || staleLock || releases.some((release) => release.ahead))
-          relockAndCheck(checkout);
-        if (commitOwned(checkout, inspection.packagePaths)) committed.add(checkout.dir);
+        const relocked = bumped || staleLock || releases.some((release) => release.ahead);
+        if (relocked) relockAndCheck(checkout);
+        if (commitOwned(checkout, inspection.packagePaths, relocked)) committed.add(checkout.dir);
         followers.push(checkout);
 
         for (const { entry, local, remote, ahead } of releases) {
           if (ahead) {
-            console.log(`publishing ${entry.name}@${local} (npm has ${remote ?? 'none'})`);
-            if (!publish(checkout, entry)) throw new Abort(`publish failed for ${entry.name}`);
-            if (!servedByRegistry(entry.name, local)) {
-              throw new Abort(
-                `npm accepted ${entry.name}@${local} but the registry does not serve it`,
-              );
-            }
+            publish(checkout, entry, local, remote);
           } else if (section[entry.name] === local) {
             console.log(`✓ ${entry.name}@${local} already on npm and blessed`);
             continue;
@@ -388,7 +427,9 @@ if (command === 'train') {
         }
       }
       if (laneBlessed.length > 0) {
-        writeManifest(manifest);
+        effect(`bless ${laneBlessed.join(', ')} in versions.json`, undefined, () =>
+          writeManifest(manifest),
+        );
         bomDirty = true;
         blessed.push(...laneBlessed);
       }
@@ -442,13 +483,18 @@ if (command === 'train') {
         checkout.dir,
         `train/ecosystem-sync-${new Date().toISOString().slice(0, 10)}`,
       );
-      if (git(checkout.dir, 'switch', '-c', branch).status !== 0) {
-        throw new Abort(`could not create ${branch} in ${checkout.name}`);
-      }
+      const switched = effect(
+        `create review branch ${branch} in ${checkout.name}`,
+        true,
+        () => git(checkout.dir, 'switch', '-c', branch).status === 0,
+      );
+      if (!switched) throw new Abort(`could not create ${branch} in ${checkout.name}`);
       followers.push(checkout);
-      if (commitOwned(checkout, inspection.packagePaths)) {
+      if (commitOwned(checkout, inspection.packagePaths, true)) {
         reviewBranches.push({ dir: checkout.dir, branch, base });
-        console.log(`committed on ${branch} for review; the checkout stays on it until merged`);
+        if (!dryRun) {
+          console.log(`committed on ${branch} for review; the checkout stays on it until merged`);
+        }
       }
     } catch (error) {
       if (!(error instanceof Abort)) throw error;
@@ -468,54 +514,74 @@ if (command === 'train') {
     let version = ownVersion();
     if (remoteVersion !== null && compare(version, remoteVersion) <= 0) {
       version = bumpPatch(remoteVersion);
-      const pkgPath = join(packageRoot, 'package.json');
-      const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
-      pkg.version = version;
-      writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+      const bumped = version;
+      effect(`bump @inixiative/config to ${bumped} in package.json`, undefined, () => {
+        const pkgPath = join(packageRoot, 'package.json');
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+        pkg.version = bumped;
+        writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+      });
     }
     manifest.ecosystem['@inixiative/config'] = version;
-    writeManifest(manifest);
-    for (const fixture of fixtureDirs()) {
-      const inspection = inspect(fixture, manifest);
-      for (const finding of inspection.findings)
-        if (finding.kind === 'ecosystem-range') finding.fix?.();
-      inspection.flush();
-    }
-    const check = spawnSync('bun', ['run', 'check'], { cwd: packageRoot, stdio: 'inherit' });
-    if (check.status !== 0) {
-      console.error('✗ check failed in @inixiative/config — aborting before publish');
-      process.exit(1);
-    }
-    spawnSync('git', ['add', '--', 'package.json', 'versions.json', 'test/fixtures'], {
-      cwd: packageRoot,
-    });
-    const commit = spawnSync(
-      'git',
-      ['commit', '-m', `chore: bless ${blessed.join(', ')} — ${version}`],
-      { cwd: packageRoot, stdio: 'inherit' },
+    effect(
+      `bless @inixiative/config@${version} in versions.json and move test/fixtures onto the blessed set`,
+      undefined,
+      () => {
+        writeManifest(manifest);
+        for (const fixture of fixtureDirs()) {
+          const inspection = inspect(fixture, manifest);
+          for (const finding of inspection.findings)
+            if (finding.kind === 'ecosystem-range') finding.fix?.();
+          inspection.flush();
+        }
+      },
     );
-    if (commit.status !== 0) {
-      console.error('✗ commit failed in @inixiative/config — aborting before publish');
-      process.exit(1);
-    }
-    const publish = spawnSync('npm', ['publish'], { cwd: packageRoot, stdio: 'inherit' });
-    if (publish.status !== 0 || !servedByRegistry('@inixiative/config', version)) {
-      console.error('✗ publish failed for @inixiative/config');
-      process.exit(1);
-    }
+    effect('run bun run check in @inixiative/config', undefined, () => {
+      const check = spawnSync('bun', ['run', 'check'], { cwd: packageRoot, stdio: 'inherit' });
+      if (check.status !== 0) {
+        console.error('✗ check failed in @inixiative/config — aborting before publish');
+        process.exit(1);
+      }
+    });
+    effect(
+      `commit "chore: bless ${blessed.join(', ')} — ${version}" in @inixiative/config`,
+      undefined,
+      () => {
+        spawnSync('git', ['add', '--', 'package.json', 'versions.json', 'test/fixtures'], {
+          cwd: packageRoot,
+        });
+        const commit = spawnSync(
+          'git',
+          ['commit', '-m', `chore: bless ${blessed.join(', ')} — ${version}`],
+          { cwd: packageRoot, stdio: 'inherit' },
+        );
+        if (commit.status !== 0) {
+          console.error('✗ commit failed in @inixiative/config — aborting before publish');
+          process.exit(1);
+        }
+      },
+    );
+    effect(`publish @inixiative/config@${version} to npm`, undefined, () => {
+      const publish = spawnSync('npm', ['publish'], { cwd: packageRoot, stdio: 'inherit' });
+      if (publish.status !== 0 || !servedByRegistry('@inixiative/config', version)) {
+        console.error('✗ publish failed for @inixiative/config');
+        process.exit(1);
+      }
+      console.log(`published: @inixiative/config@${version} — the BOM names the new state`);
+    });
     committed.add(packageRoot);
-    console.log(`published: @inixiative/config@${version} — the BOM names the new state`);
 
     // Every checkout this train re-locked still pins the previous @inixiative/config, which
     // `check` now reports as stale: bring each onto the release it just blessed.
+    if (followers.length > 0) console.log(`\n═ re-lock onto @inixiative/config@${version}`);
     for (const checkout of followers) {
       try {
         const { inspection, bumped, staleLock } = bumpRanges(checkout);
         if (!bumped && !staleLock) continue;
         relockAndCheck(checkout, false);
-        if (commitOwned(checkout, inspection.packagePaths) && !checkout.consumer)
+        if (commitOwned(checkout, inspection.packagePaths, true) && !checkout.consumer)
           committed.add(checkout.dir);
-        console.log(`✓ ${checkout.name} locked to @inixiative/config@${version}`);
+        if (!dryRun) console.log(`✓ ${checkout.name} locked to @inixiative/config@${version}`);
       } catch (error) {
         if (!(error instanceof Abort)) throw error;
         failed.push(checkout.name);
@@ -524,7 +590,13 @@ if (command === 'train') {
     }
   }
 
-  if (flags.has('--push')) {
+  if (dryRun) {
+    console.log(
+      `\ndry run complete — a real train would commit in ${committed.size} repo(s) and open ${reviewBranches.length} review branch(es)${commandLine.push ? ', then push them' : ''}:`,
+    );
+    for (const repoDir of committed) console.log(`  ${repoDir}`);
+    for (const { dir: repoDir, branch } of reviewBranches) console.log(`  ${repoDir} (${branch})`);
+  } else if (commandLine.push) {
     for (const repoDir of committed) {
       if (spawnSync('git', ['push'], { cwd: repoDir, stdio: 'inherit' }).status !== 0) {
         console.error(`✗ push failed in ${repoDir}`);
@@ -598,7 +670,7 @@ function fixtureDirs(): string[] {
     .filter((dir) => existsSync(join(dir, 'package.json')));
 }
 
-if (existsSync(join(dir, '.git')) && !flags.has('--force')) {
+if (existsSync(join(dir, '.git')) && !commandLine.force) {
   const status = spawnSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' });
   if (status.status === 0 && status.stdout.trim().length > 0) {
     console.error('✗ working tree dirty — commit first or pass --force');
@@ -612,7 +684,7 @@ first.flush();
 const fixed = first.findings.filter((finding) => finding.fix).length;
 if (fixed > 0) console.log(`applied ${fixed} fix${fixed === 1 ? '' : 'es'}`);
 
-if (!flags.has('--no-install')) {
+if (!commandLine.noInstall) {
   // A removed member toolchain range leaves its copy linked in the member's node_modules, and
   // neither `bun install` nor `--force` unlinks it; dropping the member's links makes bun relink.
   const relinked = new Set(
