@@ -13,7 +13,7 @@
     "@types/bun"
   ],
   "ecosystem": {
-    "@inixiative/config": "0.5.53",
+    "@inixiative/config": "0.5.54",
     "@inixiative/json-rules": "3.1.0",
     "@inixiative/permissions": "0.4.0",
     "@inixiative/transitions": "0.3.0",
@@ -24,7 +24,7 @@
   },
   "agentic": {
     "@inixiative/signet": "0.1.0",
-    "@inixiative/archive": "0.7.0",
+    "@inixiative/archive": "0.8.0",
     "@inixiative/agent-session": "0.3.1",
     "@inixiative/foundry-core": "0.3.0",
     "@inixiative/foundry": "0.3.0"
