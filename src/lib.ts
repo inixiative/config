@@ -1,13 +1,18 @@
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import {
   existsSync,
   globSync,
+  linkSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -1082,10 +1087,32 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
   };
 }
 
-/** Who holds the train lock: one train at a time shares this checkout's BOM and npm's version counter. */
-export type TrainLock = { pid: number; startedAt: string; lanes: readonly string[]; root: string };
+/**
+ * Who holds the train lock. One train at a time per machine: trains share npm's version counter
+ * and, across checkouts, the ecosystem repos they commit to.
+ */
+export type TrainLock = {
+  pid: number;
+  hostname: string;
+  /** The holder process's start time (`ps -o lstart=`), so a reused pid isn't taken for it. */
+  processStart: string | null;
+  startedAt: string;
+  lanes: readonly string[];
+  root: string;
+  /** The config checkout the train runs from. */
+  checkout: string;
+};
 
-export const TRAIN_LOCK = '.train.lock';
+/** Why a lock was taken over. */
+export type StaleTrainLock =
+  | { reason: 'gone' | 'pid reused'; holder: TrainLock }
+  | { reason: 'corrupt'; contents: string };
+
+/**
+ * The one machine-wide lock: every clone, worktree and copy of config shares it. It lives in the
+ * home directory, not the temp dir, which differs between shells and sandboxes on macOS.
+ */
+export const trainLockPath = (): string => join(homedir(), '.inixiative', 'train.lock');
 
 const isAlive = (pid: number): boolean => {
   try {
@@ -1096,28 +1123,141 @@ const isAlive = (pid: number): boolean => {
   }
 };
 
+/** When `pid` started, or null when there's no such process or `ps` can't say. */
+export const processStart = (pid: number): string | null => {
+  const ps = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' });
+  const start = ps.status === 0 ? ps.stdout.trim() : '';
+  return start === '' ? null : start;
+};
+
+const parseLock = (contents: string): TrainLock | null => {
+  try {
+    const lock = JSON.parse(contents) as Partial<TrainLock> | null;
+    return lock && typeof lock === 'object' && !Array.isArray(lock) && typeof lock.pid === 'number'
+      ? (lock as TrainLock)
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+/** Why `contents` no longer holds the lock, or null while its train may still be running. */
+const staleness = (contents: string, lock: TrainLock | null): StaleTrainLock | null => {
+  if (!lock) return { reason: 'corrupt', contents };
+  // Another machine's process can't be checked from here: it holds until a person removes it.
+  if (lock.hostname !== hostname()) return null;
+  if (!isAlive(lock.pid)) return { reason: 'gone', holder: lock };
+  const start = processStart(lock.pid);
+  if (lock.processStart && start && start !== lock.processStart) {
+    return { reason: 'pid reused', holder: lock };
+  }
+  return null;
+};
+
+const readOrNull = (path: string): string | null => {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+};
+
 /**
- * Take the train lock in `dir` (this package's checkout), or say who holds it. Two trains
- * running at once race the BOM and npm's version counter — a second publish of the same config
- * version is refused after the first reserves it, burning the number. A lock whose process is
- * gone is stale and is taken over. Returns the release, which removes the lock only if it is ours.
+ * Create `path` holding `contents`, atomically, or return false when it exists. The contents are
+ * written to a private file first and hard-linked into place (link fails with EEXIST like O_EXCL),
+ * so nobody ever reads a half-written lock.
+ */
+const createExclusive = (path: string, contents: string): boolean => {
+  const draft = `${path}.${process.pid}.${randomUUID()}`;
+  writeFileSync(draft, contents, { flag: 'wx' });
+  try {
+    linkSync(draft, path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
+  } finally {
+    rmSync(draft, { force: true });
+  }
+};
+
+/** A takeover mutex older than this belongs to a process that died mid-takeover. */
+const TAKEOVER_TIMEOUT_MS = 10_000;
+
+/**
+ * Remove the stale lock whose contents are `stale`, unless it changed. Takeovers are serialized
+ * by a second, short-lived lock, so two trains can't both judge the same lock stale and the
+ * slower one delete the faster one's fresh lock.
+ */
+const removeStale = (path: string, stale: string): void => {
+  const mutex = `${path}.takeover`;
+  if (!createExclusive(mutex, `${process.pid}\n`)) {
+    try {
+      if (Date.now() - statSync(mutex).mtimeMs > TAKEOVER_TIMEOUT_MS)
+        rmSync(mutex, { force: true });
+    } catch {}
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    return;
+  }
+  try {
+    if (readOrNull(path) === stale) rmSync(path, { force: true });
+  } finally {
+    rmSync(mutex, { force: true });
+  }
+};
+
+/**
+ * Take the machine-wide train lock at `path`, or say who holds it. Two trains running at once
+ * race npm's version counter (a second publish of the same version is refused after the first
+ * reserves it, burning the number) and commit to the same repos. A lock whose process is gone,
+ * whose pid now belongs to a different process, or that can't be parsed is stale and is taken
+ * over. Returns the release, which removes the lock only while it is still ours.
  */
 export const acquireTrainLock = (
-  dir: string,
+  path: string,
   holder: TrainLock,
-): { ok: true; release: () => void; reclaimed?: TrainLock } | { ok: false; heldBy: TrainLock } => {
-  const path = join(dir, TRAIN_LOCK);
-  let reclaimed: TrainLock | undefined;
-  if (existsSync(path)) {
-    const current = JSON.parse(readFileSync(path, 'utf8')) as TrainLock;
-    if (current.pid !== holder.pid && isAlive(current.pid)) return { ok: false, heldBy: current };
-    reclaimed = current;
+):
+  | { ok: true; release: () => void; reclaimed?: StaleTrainLock }
+  | { ok: false; heldBy: TrainLock; path: string } => {
+  mkdirSync(dirname(path), { recursive: true });
+  const mine = `${JSON.stringify(holder, null, 2)}\n`;
+  let reclaimed: StaleTrainLock | undefined;
+  for (;;) {
+    if (createExclusive(path, mine)) {
+      const release = () => {
+        if (readOrNull(path) === mine) rmSync(path, { force: true });
+      };
+      return reclaimed ? { ok: true, release, reclaimed } : { ok: true, release };
+    }
+    const current = readOrNull(path);
+    if (current === null) continue;
+    const lock = parseLock(current);
+    const stale = staleness(current, lock);
+    if (!stale && lock) return { ok: false, heldBy: lock, path };
+    if (!stale) continue;
+    reclaimed = stale;
+    removeStale(path, current);
   }
-  writeFileSync(path, `${JSON.stringify(holder, null, 2)}\n`);
-  const release = () => {
-    if (!existsSync(path)) return;
-    const current = JSON.parse(readFileSync(path, 'utf8')) as TrainLock;
-    if (current.pid === holder.pid) rmSync(path);
-  };
-  return reclaimed ? { ok: true, release, reclaimed } : { ok: true, release };
+};
+
+/** Release the lock however the train ends: normal exit, failure, or SIGINT/SIGTERM/SIGHUP. */
+export const holdTrainLock = (release: () => void): void => {
+  process.on('exit', release);
+  for (const [signal, code] of [
+    ['SIGINT', 130],
+    ['SIGTERM', 143],
+    ['SIGHUP', 129],
+  ] as const) {
+    process.on(signal, () => process.exit(code));
+  }
+};
+
+/** Whether `dir` is the top of a git checkout of inixiative/config (not a bunx or npm copy). */
+export const isConfigCheckout = (dir: string): boolean => {
+  const top = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8' });
+  if (top.status !== 0) return false;
+  return (
+    realpathSync(top.stdout.trim()) === realpathSync(dir) && originRepo(dir) === 'inixiative/config'
+  );
 };

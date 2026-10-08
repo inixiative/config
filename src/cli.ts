@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { type CommandLine, parseCommandLine, UsageError } from './args';
 import {
@@ -8,14 +8,18 @@ import {
   type Checkout,
   compare,
   type Finding,
+  holdTrainLock,
   inspect,
+  isConfigCheckout,
   LANES,
   type Lane,
   laneSection,
   loadManifest,
   ownVersion,
   packageRoot,
+  processStart,
   staleUpdates,
+  trainLockPath,
   trainPlan,
   writeManifest,
 } from './lib';
@@ -184,23 +188,44 @@ if (command === 'train') {
   };
   if (dryRun) console.log('dry run: nothing is installed, written, committed, published or pushed');
 
+  if (!isConfigCheckout(packageRoot)) {
+    const message = `this config (${packageRoot}) is not a git checkout of inixiative/config — run the train from a clone, never a bunx or npm copy`;
+    if (!dryRun) {
+      console.error(`✗ ${message}`);
+      process.exit(1);
+    }
+    console.log(`⚠ ${message}`);
+  }
+
   if (!dryRun) {
-    const lock = acquireTrainLock(packageRoot, {
+    const path = trainLockPath();
+    const lock = acquireTrainLock(path, {
       pid: process.pid,
+      hostname: hostname(),
+      processStart: processStart(process.pid),
       startedAt: new Date().toISOString(),
       lanes,
       root: dir,
+      checkout: packageRoot,
     });
     if (!lock.ok) {
-      const { pid, startedAt, lanes: held, root } = lock.heldBy;
+      const { pid, hostname: host, startedAt, lanes: held, root, checkout } = lock.heldBy;
       console.error(
-        `✗ another train is running (pid ${pid}, lanes ${held.join(' + ')}, root ${root}, since ${startedAt}) — wait for it to finish; one train at a time`,
+        `✗ another train is running (pid ${pid} on ${host}, lanes ${held.join(' + ')}, root ${root}, from ${checkout}, since ${startedAt}) — wait for it to finish; one train at a time. If that train is truly gone, delete ${lock.path}`,
       );
       process.exit(1);
     }
-    if (lock.reclaimed)
-      console.log(`⚠ took over a stale train lock (pid ${lock.reclaimed.pid} is gone)`);
-    process.on('exit', lock.release);
+    const stale = lock.reclaimed;
+    if (stale?.reason === 'corrupt') {
+      console.log(
+        `⚠ took over a corrupt train lock at ${path} (unparsable: ${JSON.stringify(stale.contents)})`,
+      );
+    } else if (stale) {
+      console.log(
+        `⚠ took over a stale train lock (pid ${stale.holder.pid} ${stale.reason === 'gone' ? 'is gone' : 'now belongs to another process'})`,
+      );
+    }
+    holdTrainLock(lock.release);
   }
 
   git(packageRoot, 'fetch', '--quiet');
