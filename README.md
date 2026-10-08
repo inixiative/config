@@ -52,7 +52,7 @@ One version of `@inixiative/config` names one coherent ecosystem state:
 }
 ```
 
-A lane is a release cascade with its own blessed set. `primitives` (json-rules, permissions, transitions, rules-builder, prisma-map, atlas, gloss) ships first; `agentic` (archive, agent-session → foundry-core → foundry) builds on the primitives' blessed set and never the reverse. `check` holds every repo to the union of all lanes, so a repo that mixes both answers to both.
+A lane is a release cascade with its own blessed set. `primitives` (json-rules, permissions, transitions, rules-builder, prisma-map, atlas, gloss) ships first; `agentic` (signet → archive, agent-session → foundry-core → foundry) builds on the primitives' blessed set and never the reverse. `check` holds every repo to the union of all lanes, so a repo that mixes both answers to both.
 
 TypeScript 6.0 notes, discovered by this repo's fixture suite:
 

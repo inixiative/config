@@ -23,6 +23,7 @@
     "@inixiative/gloss": "0.0.5"
   },
   "agentic": {
+    "@inixiative/signet": "0.1.0",
     "@inixiative/archive": "0.7.0",
     "@inixiative/agent-session": "0.3.1",
     "@inixiative/foundry-core": "0.3.0",
