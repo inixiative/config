@@ -40,17 +40,28 @@ export const parseCommandLine = (argv: string[]): CommandLine => {
   if (!isCommand(command)) throw new UsageError(`unknown command: ${command ?? '(none)'}`);
   let values: Record<string, unknown>;
   let positionals: string[];
+  let tokens: { kind: string; name?: string }[];
   try {
     const options: ParseArgsConfig['options'] = OPTIONS[command];
-    ({ values, positionals } = parseArgs({
+    ({ values, positionals, tokens } = parseArgs({
       args: argv.slice(1),
       options,
       allowPositionals: true,
       strict: true,
+      tokens: true,
     }));
   } catch (error) {
     throw new UsageError(`${command}: ${error instanceof Error ? error.message : String(error)}`);
   }
+  if (positionals.length > 1)
+    throw new UsageError(
+      `${command}: unexpected argument ${positionals[1]} — did you mean --${positionals[1]}?`,
+    );
+  const names = tokens.flatMap((token) =>
+    token.kind === 'option' && token.name ? [token.name] : [],
+  );
+  const repeated = names.find((name, index) => names.indexOf(name) !== index);
+  if (repeated) throw new UsageError(`${command}: --${repeated} given more than once`);
   const presetValue = values.preset;
   if (typeof presetValue === 'string' && !PRESETS.includes(presetValue as Preset)) {
     throw new UsageError(`unknown preset: ${presetValue}`);

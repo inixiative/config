@@ -184,4 +184,17 @@ describe('parseCommandLine', () => {
     expect(() => parseCommandLine(['train', '--lane=everything'])).toThrow(UsageError);
     expect(() => parseCommandLine(['check', '--preset=vue'])).toThrow(UsageError);
   });
+
+  test('a forgotten dash is an error, not a real train', () => {
+    expect(() => parseCommandLine(['train', '/root', 'dry-run'])).toThrow(
+      'unexpected argument dry-run — did you mean --dry-run?',
+    );
+    expect(() => parseCommandLine(['ports', 'a', 'b'])).toThrow(UsageError);
+  });
+
+  test('a flag given twice is an error', () => {
+    expect(() =>
+      parseCommandLine(['train', '/root', '--lane=agentic', '--lane=primitives']),
+    ).toThrow('--lane given more than once');
+  });
 });
