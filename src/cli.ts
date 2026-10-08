@@ -580,7 +580,7 @@ function servedByRegistry(name: string, version: string): boolean {
     });
     if (view.status === 0 && view.stdout.trim() === version) return true;
     if (Date.now() >= deadline) return false;
-    Bun.sleepSync(10_000);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10_000);
   }
 }
 
