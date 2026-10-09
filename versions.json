@@ -18,7 +18,7 @@
     "@inixiative/permissions": "0.4.0",
     "@inixiative/transitions": "0.5.0",
     "@inixiative/rules-builder": "0.31.0",
-    "@inixiative/prisma-map": "0.3.0",
+    "@inixiative/prisma-map": "0.3.1",
     "@inixiative/atlas": "0.2.0",
     "@inixiative/gloss": "0.0.5"
   },
