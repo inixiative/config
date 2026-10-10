@@ -553,9 +553,11 @@ if (command === 'train') {
   if (failed.length > 0) console.log(`failed: ${failed.join(', ')}`);
 
   // The BOM names the new state, so this package ships last: its own version blessed in the
-  // BOM, the fixtures following the blessed set, check, commit, publish.
-  if (bomDirty) {
-    const remoteVersion = npmLatest('@inixiative/config');
+  // BOM, the fixtures following the blessed set, check, commit, publish. A version committed
+  // ahead of npm is a release whose publish failed: ship it even when nothing new was blessed.
+  const remoteVersion = npmLatest('@inixiative/config');
+  const unpublished = remoteVersion !== null && compare(ownVersion(), remoteVersion) > 0;
+  if (bomDirty || unpublished) {
     let version = ownVersion();
     if (remoteVersion !== null && compare(version, remoteVersion) <= 0) {
       version = bumpPatch(remoteVersion);
@@ -595,6 +597,8 @@ if (command === 'train') {
         spawnSync('git', ['add', '--', 'package.json', 'versions.json', 'test/fixtures'], {
           cwd: packageRoot,
         });
+        if (spawnSync('git', ['diff', '--cached', '--quiet'], { cwd: packageRoot }).status === 0)
+          return;
         const commit = spawnSync(
           'git',
           ['commit', '-m', `chore: bless ${blessed.join(', ')} — ${version}`],
