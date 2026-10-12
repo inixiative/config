@@ -330,7 +330,7 @@ const childDirs = (dir: string): string[] =>
 
 /**
  * Candidate checkout dirs under root: each child with a package.json, and one level into a
- * child without one (a workspace folder such as kingdom-workspace/). Linked git worktrees
+ * child without one (a workspace folder such as team-workspace/). Linked git worktrees
  * (`.git` is a file) are other sessions' branches and never candidates.
  */
 const candidateDirs = (root: string): string[] => {

@@ -94,15 +94,15 @@ const ecosystemRoot = (): string => {
   write(join(root, 'foundry-feature', '.git'), 'gitdir: /elsewhere/.git/worktrees/feature\n');
   clone(join(root, 'template'), 'inixiative/template', { name: 'template', private: true });
   clone(join(root, 'oracle'), 'inixiative/oracle', { name: '@inixiative/oracle', private: true });
-  clone(join(root, 'kingdom-workspace', 'kingdom'), 'inixiative/kingdom', {
+  clone(join(root, 'team-workspace', 'kingdom'), 'inixiative/kingdom', {
     name: 'kingdom',
     private: true,
   });
   // A handoff clone of agent-session without an origin loses to the one with an origin.
-  write(join(root, 'kingdom-workspace', 'agent-session', 'package.json'), {
+  write(join(root, 'team-workspace', 'agent-session', 'package.json'), {
     name: '@inixiative/agent-session',
   });
-  git(join(root, 'kingdom-workspace', 'agent-session'), 'init', '-q');
+  git(join(root, 'team-workspace', 'agent-session'), 'init', '-q');
   git(join(root, 'agent-session'), 'init', '-q');
   git(
     join(root, 'agent-session'),
@@ -206,7 +206,7 @@ describe('discover', () => {
       '@inixiative/foundry-core',
       '@inixiative/foundry',
     ]);
-    expect(byName.kingdom.dir).toBe(join(root, 'kingdom-workspace', 'kingdom'));
+    expect(byName.kingdom.dir).toBe(join(root, 'team-workspace', 'kingdom'));
     expect(byName.kingdom.consumer?.lanes).toEqual(['primitives', 'agentic']);
     expect(byName.kingdom.packages).toEqual([]);
   });
