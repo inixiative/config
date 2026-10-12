@@ -57,6 +57,9 @@ const agenticRoot = (): string => {
     'packages/foundry/package.json': pkg('@inixiative/foundry', {
       dependencies: { '@inixiative/foundry-core': 'workspace:*' },
     }),
+    'packages/acp/package.json': pkg('@inixiative/foundry-acp', {
+      dependencies: { '@inixiative/foundry': 'workspace:*' },
+    }),
   });
   const consumer = { dependencies: { '@inixiative/signet': '^0.0.1' } };
   repo(

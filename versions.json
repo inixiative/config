@@ -27,7 +27,8 @@
     "@inixiative/archive": "0.14.0",
     "@inixiative/agent-session": "0.6.0",
     "@inixiative/foundry-core": "0.4.0",
-    "@inixiative/foundry": "0.4.0"
+    "@inixiative/foundry": "0.4.0",
+    "@inixiative/foundry-acp": "0.1.0"
   },
   "consumers": {
     "inixiative/template": {
