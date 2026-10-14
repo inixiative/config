@@ -3,7 +3,9 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
+  adoptionTarget,
   blessedVersions,
+  compare,
   consumersFor,
   discover,
   inspect,
@@ -15,6 +17,7 @@ import {
   missingFor,
   npmAlias,
   ownVersion,
+  promoteCandidates,
   topoOrder,
   trainPlan,
 } from '../src/lib';
@@ -140,6 +143,14 @@ describe('the BOM', () => {
       expect(consumer.lanes.length).toBeGreaterThan(0);
       for (const lane of consumer.lanes) expect(LANES).toContain(lane);
       if (consumer.upstream) expect(consumers).toHaveProperty(consumer.upstream);
+    }
+  });
+
+  test('every candidate belongs to a lane and is newer than its blessed version', () => {
+    const all = blessedVersions(manifest);
+    for (const [name, version] of Object.entries(manifest.candidates ?? {})) {
+      expect(LANES.some((lane) => name in lanePackages(manifest, lane))).toBe(true);
+      expect(compare(version, all[name])).toBeGreaterThan(0);
     }
   });
 
@@ -417,5 +428,78 @@ describe('ranges across lanes', () => {
     });
     expect(lockedVersion(lock, '@inixiative/session-archive', '@inixiative/archive')).toBe('0.2.1');
     expect(lockedVersion(lock, '@inixiative/session-archive')).toBeNull();
+  });
+});
+
+describe('candidates', () => {
+  const withCandidate = (): Manifest => ({
+    ...bom(),
+    candidates: { '@inixiative/archive': '0.3.0' },
+  });
+  const app = (range: string, locked?: string) => {
+    const dir = mkdtempSync(join(tmpdir(), 'inixiative-candidate-'));
+    write(join(dir, 'package.json'), {
+      name: 'app',
+      private: true,
+      dependencies: { '@inixiative/archive': range },
+    });
+    if (locked) {
+      write(
+        join(dir, 'bun.lock'),
+        JSON.stringify({
+          packages: {
+            '@inixiative/archive': [`@inixiative/archive@${locked}`, '', {}, 'sha'],
+          },
+        }),
+      );
+    }
+    return dir;
+  };
+  const archiveFindings = (dir: string, manifest: Manifest) =>
+    inspect(dir, manifest)
+      .findings.filter((finding) => finding.target === '@inixiative/archive')
+      .map((finding) => finding.message);
+
+  test('check accepts the blessed version, the candidate, and anything between', () => {
+    expect(archiveFindings(app('^0.2.1', '0.2.1'), withCandidate())).toEqual([]);
+    expect(archiveFindings(app('^0.3.0', '0.3.0'), withCandidate())).toEqual([]);
+    expect(archiveFindings(app('^0.2.1', '0.2.5'), withCandidate())).toEqual([]);
+  });
+
+  test('a version newer than the candidate, or older than blessed, is still drift', () => {
+    expect(archiveFindings(app('^0.4.0', '0.4.0'), withCandidate())).toEqual([
+      '@inixiative/archive dependencies range ^0.4.0 does not admit blessed 0.2.1 or candidate 0.3.0 → ^0.2.1',
+      '@inixiative/archive locked at 0.4.0, blessed is 0.2.1 or candidate 0.3.0 → re-lock',
+    ]);
+    expect(archiveFindings(app('^0.2.0', '0.2.0'), withCandidate())).toEqual([
+      '@inixiative/archive locked at 0.2.0, blessed is 0.2.1 or candidate 0.3.0 → re-lock',
+    ]);
+  });
+
+  test('without a candidate, only the blessed version passes', () => {
+    expect(archiveFindings(app('^0.3.0', '0.3.0'), bom())).toEqual([
+      '@inixiative/archive dependencies range ^0.3.0 does not admit blessed 0.2.1 → ^0.2.1',
+      '@inixiative/archive locked at 0.3.0, blessed is 0.2.1 → re-lock',
+    ]);
+  });
+
+  test('the train moves repos onto the candidates', () => {
+    const target = adoptionTarget(withCandidate());
+    expect(target.agentic?.['@inixiative/archive']).toBe('0.3.0');
+    expect(target.agentic?.['@inixiative/foundry']).toBe('0.1.0');
+    expect(archiveFindings(app('^0.2.1', '0.2.1'), target)).toEqual([
+      '@inixiative/archive dependencies range ^0.2.1 does not admit candidate 0.3.0 → ^0.3.0',
+      '@inixiative/archive locked at 0.2.1, candidate is 0.3.0 → re-lock',
+    ]);
+  });
+
+  test('promotion moves a candidate into its lane and drops the empty section', () => {
+    const manifest = withCandidate();
+    expect(promoteCandidates(manifest, ['@inixiative/archive'])).toEqual([
+      '@inixiative/archive@0.3.0',
+    ]);
+    expect(manifest.agentic?.['@inixiative/archive']).toBe('0.3.0');
+    expect(manifest.candidates).toBeUndefined();
+    expect(promoteCandidates(withCandidate(), [])).toEqual([]);
   });
 });
