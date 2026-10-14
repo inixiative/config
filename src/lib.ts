@@ -511,6 +511,14 @@ const orderBy = <T>(items: T[], key: (item: T) => string, deps: (item: T) => str
   return order;
 };
 
+/** Every dependency a repo declares, in its root or any workspace member (alias targets included). */
+export const declaredDependencies = (dir: string): Set<string> => {
+  const pkg = readJson(join(dir, 'package.json'));
+  return pkg
+    ? dependencyNames(dir, ['package.json', ...workspacePackagePaths(dir, pkg)])
+    : new Set();
+};
+
 /** A monorepo's lane packages in dependency order (foundry-core before foundry). */
 const publishOrder = (checkout: Checkout): Checkout['packages'] => {
   const names = new Set(checkout.packages.map((entry) => entry.name));
@@ -1008,12 +1016,8 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
         const candidate = candidateSet[name];
         const okBlessed = admits(range, blessed);
         const okCandidate = candidate ? admits(range, candidate) : false;
-        const ok =
-          okBlessed === true || okCandidate === true
-            ? true
-            : okBlessed === null || okCandidate === null
-              ? null
-              : false;
+        // The candidate only ever widens what passes; it never turns drift into "not understood".
+        const ok = okBlessed === true || okCandidate === true ? true : okBlessed;
         const accepted =
           candidate === blessed
             ? `candidate ${candidate}`
@@ -1043,6 +1047,7 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
         const locked = lockedVersion(lockText, key, name);
         const lockAccepted =
           locked === blessed ||
+          (!!locked && locked === candidate) ||
           (!!locked &&
             !!candidate &&
             compare(locked, blessed) >= 0 &&

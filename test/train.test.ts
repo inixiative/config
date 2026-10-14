@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import {
   chmodSync,
   copyFileSync,
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -148,7 +147,7 @@ describe('train --dry-run', () => {
     expect(out).toContain(`would publish @inixiative/signet@`);
     expect(out).toContain(`would publish @inixiative/foundry@`);
     expect(out).toContain('would re-lock kingdom and run its check');
-    expect(out).toContain('would create review branch train/ecosystem-sync-');
+    expect(out).toContain('would create review branch train/adopt-signet-');
     expect(out).toContain('would publish @inixiative/config@');
     expect(out).toContain('dry run complete');
 
@@ -246,7 +245,7 @@ esac`,
   shim(
     'bun',
     `case "$1 $2" in
-"run check") [ -f needs-adopt ] && [ ! -f adopted ] && exit 1; exit 0 ;;
+"run check") [ -f needs-adopt ] && [ ! -f adopted ] && { touch generated.txt; exit 1; }; exit 0 ;;
 "run train:adopt") touch adopted ;;
 esac
 exit 0`,
@@ -284,19 +283,20 @@ describe('two-phase blessing', () => {
   test('candidate → adoption PR → promoted once it merges', () => {
     const { train, bom, at, config, registry } = offlineTrain();
 
-    // Run 1: archive 0.19.0 publishes and becomes a candidate. Foundry's check fails against it,
-    // so the train opens an adoption branch instead of stopping; oracle passes and gets a review
-    // branch. Nothing is blessed yet, and config ships a release that carries the candidate.
+    // Run 1: archive 0.19.0 publishes and becomes a candidate. Foundry's check fails against it
+    // (and litters its tree), so the train opens an adoption branch instead of stopping. Oracle
+    // passes, but its main stays on 0.18.0 until its branch merges, so that branch is an adoption
+    // too. Nothing is blessed yet; config ships a release that carries the candidate.
     const first = train();
+    expect(first.status).toBe(0);
     expect(first.out).toContain('against the candidates — it adopts them on a branch');
     expect(first.out).toContain('blessed: nothing');
     expect(first.out).toContain(
-      '@inixiative/archive@0.19.0 — waiting on @inixiative/foundry (train/adopt-archive-0.19.0)',
+      '@inixiative/archive@0.19.0 — waiting on @inixiative/foundry (train/adopt-archive-0.19.0), oracle (train/adopt-archive-0.19.0)',
     );
     expect(first.out).toContain(
-      '@inixiative/foundry: train/adopt-archive-0.19.0 (opened this run)',
+      '@inixiative/foundry: train/adopt-archive-0.19.0 — opened this run',
     );
-    expect(first.status).toBe(0);
     expect(bom().agentic['@inixiative/archive']).toBe('0.18.0');
     expect(bom().candidates).toEqual({ '@inixiative/archive': '0.19.0' });
     expect(bom().ecosystem['@inixiative/config']).toBe('1.0.1');
@@ -314,26 +314,33 @@ describe('two-phase blessing', () => {
     const foundryMain = JSON.parse(readFileSync(join(at('foundry'), 'package.json'), 'utf8'));
     expect(foundryMain.dependencies['@inixiative/archive']).toBe('^0.18.0');
     const adoption = 'train/adopt-archive-0.19.0';
-    expect(gitOut(at('foundry'), 'show', `${adoption}:package.json`)).toContain('"^0.19.0"');
+    for (const name of ['foundry', 'oracle']) {
+      expect(gitOut(at(name), 'show', `${adoption}:package.json`)).toContain('"^0.19.0"');
+      expect(gitOut(at(name), 'log', '-1', '--format=%s', adoption)).toBe(
+        'chore: adopt @inixiative/archive@0.19.0',
+      );
+    }
     expect(gitOut(at('foundry'), 'ls-tree', '--name-only', adoption)).toContain('adopted');
-    expect(gitOut(at('foundry'), 'log', '-1', '--format=%s', adoption)).toBe(
-      'chore: adopt @inixiative/archive@0.19.0',
-    );
-    const sync = gitOut(at('oracle'), 'branch', '--list', 'train/ecosystem-sync-*').trim();
-    expect(gitOut(at('oracle'), 'show', `${sync}:package.json`)).toContain('"^0.19.0"');
 
-    // Run 2, adoption unmerged: the train waits on it and opens nothing new.
+    // Run 2, nothing merged. Foundry's branch was pushed, oracle's never was: the train waits on
+    // both, says which is which, and opens nothing new.
+    run(at('foundry'), realGit, 'update-ref', `refs/remotes/origin/${adoption}`, adoption);
     const waiting = train();
-    expect(waiting.out).toContain('waiting for it to merge');
+    expect(waiting.out).toContain(
+      '@inixiative/foundry: train/adopt-archive-0.19.0 — waiting for its PR to merge',
+    );
+    expect(waiting.out).toContain(
+      'oracle: train/adopt-archive-0.19.0 — committed but never pushed',
+    );
     expect(waiting.out).toContain('blessed: nothing');
     expect(bom().candidates).toEqual({ '@inixiative/archive': '0.19.0' });
-    expect(
-      gitOut(at('foundry'), 'branch', '--list', 'train/adopt-*').trim().split('\n'),
-    ).toHaveLength(1);
+    for (const name of ['foundry', 'oracle']) {
+      expect(gitOut(at(name), 'branch', '--list', 'train/*').trim().split('\n')).toHaveLength(1);
+    }
 
-    // The adoption merges, but oracle is dirty and still on the blessed version: nothing has
-    // verified it against the candidate, so the candidate holds.
+    // Both adoptions merge, but oracle is dirty, so this run cannot verify it: the candidate holds.
     run(at('foundry'), realGit, 'merge', '-q', '--ff-only', adoption);
+    run(at('oracle'), realGit, 'merge', '-q', '--ff-only', adoption);
     write(join(at('oracle'), 'scratch.txt'), 'work in progress');
     const held = train();
     expect(held.out).toContain('dirty working tree — commit your work first, skipping');
@@ -342,9 +349,8 @@ describe('two-phase blessing', () => {
     );
     expect(bom().candidates).toEqual({ '@inixiative/archive': '0.19.0' });
 
-    // Oracle's sync merges too; the next train promotes the candidate.
+    // Oracle is clean again; the next train promotes the candidate.
     rmSync(join(at('oracle'), 'scratch.txt'));
-    run(at('oracle'), realGit, 'merge', '-q', '--ff-only', sync);
     const promoted = train();
     expect(promoted.status).toBe(0);
     expect(promoted.out).toContain('blessed: @inixiative/archive@0.19.0');
@@ -353,8 +359,20 @@ describe('two-phase blessing', () => {
     expect(gitOut(config, 'log', '-1', '--format=%s')).toMatch(
       /^chore: bless @inixiative\/archive@0\.19\.0 — 1\.0\.\d+$/,
     );
-    expect(existsSync(join(at('foundry'), 'adopted'))).toBe(true);
   }, 90_000);
+
+  test('an adoption its hooks reject leaves no branch behind and holds the candidate', () => {
+    const { train, bom, at } = offlineTrain();
+    write(join(at('foundry'), '.git', 'hooks', 'pre-commit'), '#!/bin/sh\nexit 1\n');
+    chmodSync(join(at('foundry'), '.git', 'hooks', 'pre-commit'), 0o755);
+    const { out } = train();
+    expect(out).toContain('its hooks reject the adoption');
+    expect(out).toContain('@inixiative/foundry: the train could not commit it — adopt by hand');
+    expect(bom().candidates).toEqual({ '@inixiative/archive': '0.19.0' });
+    expect(gitOut(at('foundry'), 'branch', '--list', 'train/*')).toBe('');
+    expect(gitOut(at('foundry'), 'status', '--porcelain')).toBe('');
+    expect(gitOut(at('foundry'), 'worktree', 'list').split('\n')).toHaveLength(1);
+  }, 30_000);
 });
 
 describe('parseCommandLine', () => {
