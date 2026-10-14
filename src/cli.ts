@@ -1,5 +1,13 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { type CommandLine, parseCommandLine, UsageError } from './args';
@@ -438,7 +446,7 @@ if (command === 'train') {
 
   /**
    * A linked worktree of `checkout` on a new branch from HEAD; the checkout itself never moves.
-   * The repo's root env files come along (git leaves ignored files behind), so scripts such as
+   * The repo's ignored env files come along, at any depth (git leaves them behind), so scripts such as
    * `train:adopt` find the same credentials and settings as in the checkout.
    */
   const worktree = (checkout: Checkout, branch: string): Checkout => {
@@ -447,10 +455,24 @@ if (command === 'train') {
       throw new Abort(`could not create ${branch} in ${checkout.name}`);
     }
     worktrees.push({ repo: checkout.dir, path });
-    for (const name of readdirSync(checkout.dir)) {
-      if (/^\.env(\..+)?$/.test(name) && !existsSync(join(path, name))) {
-        writeFileSync(join(path, name), readFileSync(join(checkout.dir, name)));
-      }
+    const envFiles = git(
+      checkout.dir,
+      'ls-files',
+      '--others',
+      '--ignored',
+      '--exclude-standard',
+      '--',
+      ':(glob)**/.env*',
+    )
+      .stdout.split('\n')
+      .filter(
+        (file) =>
+          /(^|\/)\.env[^/]*$/.test(file) && !/(^|\/)(node_modules|\.worktrees)\//.test(file),
+      );
+    for (const file of envFiles) {
+      if (existsSync(join(path, file))) continue;
+      mkdirSync(dirname(join(path, file)), { recursive: true });
+      writeFileSync(join(path, file), readFileSync(join(checkout.dir, file)));
     }
     return { ...checkout, dir: path };
   };

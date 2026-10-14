@@ -204,6 +204,9 @@ const offlineTrain = () => {
       dependencies: { '@inixiative/archive': '^0.18.0' },
     },
     'needs-adopt': '',
+    '.gitignore': '.env*\n',
+    // Ignored, so git leaves it out of a worktree; the adoption still needs it.
+    'apps/api/.env.local': 'SECRET=1\n',
   });
   repo(
     join(root, 'oracle'),
@@ -246,7 +249,7 @@ esac`,
     'bun',
     `case "$1 $2" in
 "run check") [ -f needs-adopt ] && [ ! -f adopted ] && { touch generated.txt; exit 1; }; exit 0 ;;
-"run train:adopt") touch adopted ;;
+"run train:adopt") [ -f apps/api/.env.local ] && touch adopted ;;
 esac
 exit 0`,
   );
@@ -320,6 +323,7 @@ describe('two-phase blessing', () => {
         'chore: adopt @inixiative/archive@0.19.0',
       );
     }
+    // train:adopt ran with the checkout's nested, ignored env file in place.
     expect(gitOut(at('foundry'), 'ls-tree', '--name-only', adoption)).toContain('adopted');
 
     // Run 2, nothing merged. Foundry's branch was pushed, oracle's never was: the train waits on
