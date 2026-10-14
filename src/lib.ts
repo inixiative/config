@@ -38,6 +38,11 @@ export type Manifest = {
   agentic?: Record<string, string>;
   /** Consumers keyed by GitHub `owner/repo`; `upstream` is the repo it syncs from, processed first. */
   consumers?: Record<string, Consumer>;
+  /**
+   * Published lane versions newer than their blessed one, waiting for every dependent to adopt
+   * them. `check` accepts any version from the blessed one up to the candidate.
+   */
+  candidates?: Record<string, string>;
 };
 
 export const isLane = (value: string): value is Lane =>
@@ -65,6 +70,40 @@ export const blessedVersions = (manifest: Manifest): Record<string, string> => (
 export const laneOf = (manifest: Manifest, name: string): Lane | null =>
   LANES.find((lane) => name in lanePackages(manifest, lane)) ?? null;
 
+/**
+ * The set the train moves repos onto: the blessed sets with each candidate in its place. It
+ * keeps `candidates`, so findings name a candidate as one.
+ */
+export const adoptionTarget = (manifest: Manifest): Manifest => {
+  const candidates = manifest.candidates ?? {};
+  const overlay = (section: Record<string, string>) =>
+    Object.fromEntries(
+      Object.entries(section).map(([name, version]) => [name, candidates[name] ?? version]),
+    );
+  return {
+    ...manifest,
+    ecosystem: overlay(manifest.ecosystem),
+    agentic: overlay(manifest.agentic ?? {}),
+  };
+};
+
+/** Bless the named candidates: each moves into its lane's section and leaves `candidates`. */
+export const promoteCandidates = (manifest: Manifest, names: string[]): string[] => {
+  const promoted: string[] = [];
+  for (const name of names) {
+    const version = manifest.candidates?.[name];
+    const lane = laneOf(manifest, name);
+    if (!version || !lane || !manifest.candidates) continue;
+    laneSection(manifest, lane)[name] = version;
+    delete manifest.candidates[name];
+    promoted.push(`${name}@${version}`);
+  }
+  if (manifest.candidates && Object.keys(manifest.candidates).length === 0) {
+    delete manifest.candidates;
+  }
+  return promoted;
+};
+
 /** Consumers of any of the given lanes, upstreams before the repos that sync from them. */
 export const consumersFor = (manifest: Manifest, lanes: readonly Lane[]): string[] => {
   const consumers = manifest.consumers ?? {};
@@ -91,6 +130,8 @@ export type Finding = {
   message: string;
   kind?: 'stale-lock' | 'ecosystem-range' | 'member-toolchain' | 'toolchain-lock';
   name?: string;
+  /** For ecosystem findings: the package the range or lock answers to (an alias's target). */
+  target?: string;
   /** The package.json declaring `name`, relative to the repo dir. */
   path?: string;
   fix?: () => void;
@@ -950,6 +991,7 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
   }
 
   const blessedSet = blessedVersions(manifest);
+  const candidateSet = manifest.candidates ?? {};
   const staleKeys = new Set<string>();
   for (const target of rangeTargets) {
     for (const field of DEP_FIELDS) {
@@ -962,7 +1004,20 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
         const blessed = blessedSet[name];
         if (!blessed || name === target.pkg.name || !deps) continue;
         const rewrite = (next: string) => (name === key ? next : `npm:${name}@${next}`);
-        const ok = admits(range, blessed);
+        // A candidate is accepted beside the blessed version: anything from blessed up to it.
+        const candidate = candidateSet[name];
+        const okBlessed = admits(range, blessed);
+        const okCandidate = candidate ? admits(range, candidate) : false;
+        const ok =
+          okBlessed === true || okCandidate === true
+            ? true
+            : okBlessed === null || okCandidate === null
+              ? null
+              : false;
+        const accepted =
+          candidate === blessed
+            ? `candidate ${candidate}`
+            : `blessed ${blessed}${candidate ? ` or candidate ${candidate}` : ''}`;
         if (ok === false) {
           // An exact pin is a choice to pin: move the pin, never loosen it to a range.
           const next = /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(range) ? blessed : `^${blessed}`;
@@ -970,7 +1025,8 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
             level: 'error',
             kind: 'ecosystem-range',
             name,
-            message: `${target.label}${key} ${field} range ${spec} does not admit blessed ${blessed} → ${rewrite(next)}`,
+            target: name,
+            message: `${target.label}${key} ${field} range ${spec} does not admit ${accepted} → ${rewrite(next)}`,
             fix: () => {
               deps[key] = rewrite(next);
               target.mark();
@@ -980,28 +1036,36 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
         if (ok === null) {
           findings.push({
             level: 'warn',
-            message: `${target.label}${key} range ${spec} not understood; verify manually against ${blessed}`,
+            message: `${target.label}${key} range ${spec} not understood; verify manually against ${accepted}`,
           });
         }
         if (!lockText || field === 'peerDependencies' || staleKeys.has(key)) continue;
         const locked = lockedVersion(lockText, key, name);
+        const lockAccepted =
+          locked === blessed ||
+          (!!locked &&
+            !!candidate &&
+            compare(locked, blessed) >= 0 &&
+            compare(locked, candidate) <= 0);
         if (locked && admits(range, locked) === false) {
           staleKeys.add(key);
           findings.push({
             level: 'error',
             kind: 'stale-lock',
             name: key,
+            target: name,
             path: target.path,
             message: `${target.label}${key} locked at ${locked}, violating declared ${spec} (stale lockfile) → re-lock`,
           });
-        } else if (locked && locked !== blessed) {
+        } else if (locked && !lockAccepted) {
           staleKeys.add(key);
           findings.push({
             level: 'error',
             kind: 'stale-lock',
             name: key,
+            target: name,
             path: target.path,
-            message: `${target.label}${key} locked at ${locked}, blessed is ${blessed} → re-lock`,
+            message: `${target.label}${key} locked at ${locked}, ${accepted.replace(/^(blessed|candidate) /, '$1 is ')} → re-lock`,
           });
         }
       }

@@ -1,10 +1,12 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { type CommandLine, parseCommandLine, UsageError } from './args';
 import {
   acquireTrainLock,
+  adoptionTarget,
+  blessedVersions,
   type Checkout,
   compare,
   type Finding,
@@ -13,11 +15,13 @@ import {
   isConfigCheckout,
   LANES,
   type Lane,
+  laneOf,
   laneSection,
   loadManifest,
   ownVersion,
   packageRoot,
   processStart,
+  promoteCandidates,
   staleUpdates,
   trainLockPath,
   trainPlan,
@@ -142,6 +146,9 @@ if (command === 'scan') {
   const missing = [...plan.lanes.flatMap((lane) => lane.missing), ...plan.missingConsumers];
   const ambiguous = [...plan.lanes.flatMap((lane) => lane.ambiguous), ...plan.ambiguousConsumers];
   const drifted: string[] = [];
+  for (const [name, version] of Object.entries(manifest.candidates ?? {})) {
+    console.log(`candidate: ${name}@${version} (blessed ${blessedVersions(manifest)[name]})`);
+  }
   for (const checkout of checkouts) {
     console.log(`\n${checkout.name} — ${checkout.dir} (${laneLabel(checkout)})`);
     const off = offDefaultBranch(checkout.dir);
@@ -175,6 +182,8 @@ if (command === 'scan') {
 
 /** Thrown to stop one lane (or one consumer) without stopping the train. */
 class Abort extends Error {}
+/** A repo's own check failed: against candidates it moved onto, that repo adopts them on a branch. */
+class CheckFailed extends Abort {}
 
 if (command === 'train') {
   /**
@@ -244,12 +253,33 @@ if (command === 'train') {
     process.exit(1);
   }
 
-  const blessed: string[] = [];
+  /** Versions published (or found on npm) this run and recorded as candidates. */
+  const recorded: string[] = [];
   const skipped: string[] = [];
   const failed: string[] = [];
+  const failedLanes = new Set<Lane>();
   const committed = new Set<string>();
+  /** Branches to push and open a PR for: consumer syncs and adoptions. */
   const reviewBranches: { dir: string; branch: string; base: string }[] = [];
-  let bomDirty = false;
+  /** Repos still to adopt candidates: opened this run, or an earlier run's branch not yet merged. */
+  const adoptions: {
+    name: string;
+    dir: string;
+    branch: string;
+    moving: string[];
+    opened: boolean;
+  }[] = [];
+  /** Repos that never got through this run (skipped or failed) and the candidates they'd move onto. */
+  const held: { name: string; moving: string[] }[] = [];
+  /** Linked worktrees the train committed branches in, removed however it ends. */
+  const worktrees: { repo: string; path: string }[] = [];
+  process.on('exit', () => {
+    for (const { repo, path } of worktrees.splice(0)) {
+      git(repo, 'worktree', 'remove', '--force', path);
+    }
+  });
+  /** What repos move onto: the blessed sets with every candidate in place. */
+  const target = () => adoptionTarget(manifest);
 
   /** Default branch, clean, fast-forwarded to origin — or skipped with the reason printed. */
   const ready = (checkout: Checkout): boolean => {
@@ -299,14 +329,18 @@ if (command === 'train') {
 
   /** Bump ecosystem ranges to the blessed set; report whether anything moved or the lock is stale. */
   const bumpRanges = (checkout: Checkout) => {
-    const inspection = inspect(checkout.dir, manifest);
+    const inspection = inspect(checkout.dir, target());
     const bumps = inspection.findings.filter((finding) => finding.kind === 'ecosystem-range');
     for (const bump of bumps) console.log(`  ${bump.message}`);
     if (bumps.length > 0) {
-      effect(`rewrite ${bumps.length} ecosystem range(s) to the blessed set`, undefined, () => {
-        for (const bump of bumps) bump.fix?.();
-        inspection.flush();
-      });
+      effect(
+        `rewrite ${bumps.length} ecosystem range(s) to the blessed set and its candidates`,
+        undefined,
+        () => {
+          for (const bump of bumps) bump.fix?.();
+          inspection.flush();
+        },
+      );
     }
     return {
       inspection,
@@ -323,7 +357,7 @@ if (command === 'train') {
       }
       for (const { cwd, names } of staleUpdates(
         checkout.dir,
-        inspect(checkout.dir, manifest).findings,
+        inspect(checkout.dir, target()).findings,
       )) {
         spawnSync('bun', ['update', ...names], { cwd, stdio: 'inherit' });
       }
@@ -331,11 +365,161 @@ if (command === 'train') {
         check &&
         spawnSync('bun', ['run', 'check'], { cwd: checkout.dir, stdio: 'inherit' }).status !== 0
       ) {
-        throw new Abort(`check failed in ${checkout.name}`);
+        throw new CheckFailed(`check failed in ${checkout.name}`);
       }
     });
-  /** Checkouts this train brought onto the blessed set; they follow this package's own release. */
-  const followers: Checkout[] = [];
+  /**
+   * Checkouts and branches this train brought onto the blessed set; they follow this package's
+   * own release. `onBranch` ones are worktrees of a review or adoption branch, never pushed as main.
+   */
+  const followers: { checkout: Checkout; onBranch: boolean }[] = [];
+
+  /**
+   * A checkout the train could not walk. Whatever candidates it would move onto stay
+   * candidates: nothing has verified it against them.
+   */
+  const skip = (checkout: Checkout) => {
+    skipped.push(checkout.name);
+    if (!existsSync(join(checkout.dir, 'package.json'))) return;
+    const moving = movesOf(checkout);
+    if (moving.length > 0) held.push({ name: checkout.name, moving });
+  };
+
+  /** Put the files the train rewrote back to HEAD, and node_modules back to that lockfile. */
+  const restore = (checkout: Checkout, packagePaths: string[]) =>
+    effect(`restore ${checkout.name}'s package.json files + bun.lock`, undefined, () => {
+      const owned = [...packagePaths, 'bun.lock'];
+      if (git(checkout.dir, 'status', '--porcelain', '--', ...owned).stdout.trim() === '') return;
+      const tracked = git(checkout.dir, 'ls-files', '--', ...owned)
+        .stdout.split('\n')
+        .filter(Boolean);
+      if (tracked.length > 0) git(checkout.dir, 'checkout', 'HEAD', '--', ...tracked);
+      spawnSync('bun', ['install', '--frozen-lockfile'], { cwd: checkout.dir, stdio: 'inherit' });
+      const left = git(checkout.dir, 'status', '--porcelain').stdout.trim();
+      if (left) console.log(`⚠ ${checkout.name} has changes the train did not make:\n${left}`);
+    });
+
+  /** The candidates a checkout's ranges or lockfile would move onto. */
+  const movesOf = (checkout: Checkout): string[] => {
+    const candidates = manifest.candidates ?? {};
+    const names = inspect(checkout.dir, target()).findings.flatMap((finding) =>
+      (finding.kind === 'ecosystem-range' || finding.kind === 'stale-lock') &&
+      finding.target &&
+      finding.target in candidates
+        ? [finding.target]
+        : [],
+    );
+    return [...new Set(names)].sort();
+  };
+
+  const adoptionBranch = (moving: string[]): string =>
+    `train/adopt-${moving.map((name) => `${name.replace(/^@inixiative\//, '')}-${manifest.candidates?.[name]}`).join('-')}`;
+
+  const branchExists = (cwd: string, branch: string): boolean =>
+    [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`].some(
+      (ref) => git(cwd, 'rev-parse', '--verify', '--quiet', ref).status === 0,
+    );
+
+  /** An earlier train opened this adoption and it hasn't merged: wait for it, don't redo it. */
+  const pendingAdoption = (checkout: Checkout, moving: string[]): boolean => {
+    if (moving.length === 0) return false;
+    const branch = adoptionBranch(moving);
+    if (!branchExists(checkout.dir, branch)) return false;
+    console.log(`⏳ adopting ${moving.join(', ')} on ${branch} — waiting for it to merge`);
+    adoptions.push({ name: checkout.name, dir: checkout.dir, branch, moving, opened: false });
+    return true;
+  };
+
+  /** A linked worktree of `checkout` on a new branch from HEAD; the checkout itself never moves. */
+  const worktree = (checkout: Checkout, branch: string): Checkout => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inixiative-train-')), basename(checkout.dir));
+    if (git(checkout.dir, 'worktree', 'add', '-b', branch, path, 'HEAD').status !== 0) {
+      throw new Abort(`could not create ${branch} in ${checkout.name}`);
+    }
+    worktrees.push({ repo: checkout.dir, path });
+    return { ...checkout, dir: path };
+  };
+
+  const defaultBranch = (cwd: string): string => offDefaultBranch(cwd)?.main ?? currentBranch(cwd);
+
+  /**
+   * Commit a consumer's passing re-lock on a review branch, in a worktree, and put the checkout
+   * back as it was: a train never leaves a checkout dirty or off its default branch.
+   */
+  const reviewBranch = (checkout: Checkout, packagePaths: string[]) => {
+    const branch = freeBranch(
+      checkout.dir,
+      `train/ecosystem-sync-${new Date().toISOString().slice(0, 10)}`,
+    );
+    const base = defaultBranch(checkout.dir);
+    const opened = effect(
+      `create review branch ${branch} in ${checkout.name} (in a worktree; the checkout stays on ${base})`,
+      true,
+      () => {
+        const branchCheckout = worktree(checkout, branch);
+        for (const path of [...packagePaths, 'bun.lock']) {
+          if (existsSync(join(checkout.dir, path))) {
+            writeFileSync(join(branchCheckout.dir, path), readFileSync(join(checkout.dir, path)));
+          }
+        }
+        restore(checkout, packagePaths);
+        // The commit hooks typecheck, so the worktree needs its own install.
+        relockAndCheck(branchCheckout, false);
+        if (!commitOwned(branchCheckout, packagePaths, true)) return false;
+        followers.push({ checkout: branchCheckout, onBranch: true });
+        console.log(`committed on ${branch} for review; ${checkout.name} stays on ${base}`);
+        return true;
+      },
+    );
+    if (opened) reviewBranches.push({ dir: checkout.dir, branch, base });
+  };
+
+  /**
+   * A repo that fails against candidates adopts them on `train/adopt-<pkg>-<version>`: re-lock in
+   * a worktree, run its `train:adopt` script if it declares one (Foundry re-records cassettes),
+   * commit everything, and open a PR whose CI must pass against the candidates. The candidates
+   * stay unblessed until it merges and a later train finds the repo on them.
+   */
+  const adopt = (checkout: Checkout, moving: string[]) => {
+    const branch = adoptionBranch(moving);
+    const base = defaultBranch(checkout.dir);
+    const label = moving.map((name) => `${name}@${manifest.candidates?.[name]}`).join(', ');
+    const script = checkout.pkg.scripts?.['train:adopt'];
+    adoptions.push({ name: checkout.name, dir: checkout.dir, branch, moving, opened: true });
+    try {
+      effect(
+        `open ${branch} in ${checkout.name}: re-lock onto ${label}${script ? ', run train:adopt' : ''}, commit`,
+        undefined,
+        () => {
+          const branchCheckout = worktree(checkout, branch);
+          bumpRanges(branchCheckout);
+          relockAndCheck(branchCheckout, false);
+          if (
+            script &&
+            spawnSync('bun', ['run', 'train:adopt'], { cwd: branchCheckout.dir, stdio: 'inherit' })
+              .status !== 0
+          ) {
+            console.log(
+              `⚠ train:adopt failed in ${checkout.name} — the PR needs work before it merges`,
+            );
+          }
+          git(branchCheckout.dir, 'add', '-A');
+          const commit = spawnSync('git', ['commit', '-m', `chore: adopt ${label}`], {
+            cwd: branchCheckout.dir,
+            stdio: 'inherit',
+          });
+          if (commit.status !== 0)
+            throw new Abort(`commit failed on ${branch} in ${checkout.name}`);
+          followers.push({ checkout: branchCheckout, onBranch: true });
+        },
+      );
+      reviewBranches.push({ dir: checkout.dir, branch, base });
+    } catch (error) {
+      if (!(error instanceof Abort)) throw error;
+      failed.push(checkout.name);
+      console.error(`✗ ${error.message} — adopt ${label} in ${checkout.name} by hand`);
+    }
+  };
 
   // Stage exactly what the inspection owns — root package.json plus every workspace member —
   // so a bump written into packages/* cannot be left out of the commit and silently un-released.
@@ -343,7 +527,9 @@ if (command === 'train') {
   const commitOwned = (checkout: Checkout, packagePaths: string[], changes: boolean): boolean => {
     if (dryRun && !changes) return false;
     return effect(`commit its package.json files + bun.lock in ${checkout.name}`, true, () => {
-      const tracked = [...packagePaths, 'bun.lock'];
+      const tracked = [...packagePaths, 'bun.lock'].filter((path) =>
+        existsSync(join(checkout.dir, path)),
+      );
       const mutated = git(checkout.dir, 'status', '--porcelain', '--', ...tracked);
       if (mutated.status !== 0 || mutated.stdout.trim().length === 0) return false;
       if (git(checkout.dir, 'add', '--', ...tracked).status !== 0) {
@@ -414,7 +600,8 @@ if (command === 'train') {
     );
     const section = laneSection(manifest, lane);
     const before = { ...section };
-    const laneBlessed: string[] = [];
+    const candidatesBefore = { ...manifest.candidates };
+    const laneRecorded: string[] = [];
     try {
       if (missing.length > 0) {
         throw new Abort(
@@ -431,10 +618,9 @@ if (command === 'train') {
       for (const checkout of checkouts) {
         console.log(`\n▸ ${checkout.name} — ${checkout.dir}`);
         if (!ready(checkout)) {
-          skipped.push(checkout.name);
+          skip(checkout);
           continue;
         }
-        const { inspection, bumped, staleLock } = bumpRanges(checkout);
         const releases = checkout.packages.map((entry) => {
           const local =
             (JSON.parse(readFileSync(join(checkout.dir, entry.path), 'utf8')).version as string) ??
@@ -449,13 +635,26 @@ if (command === 'train') {
           console.log(
             `⚠ ${behind.entry.name} local ${behind.local} is behind npm ${behind.remote} — pull first, skipping`,
           );
-          skipped.push(checkout.name);
+          skip(checkout);
           continue;
         }
+        const moving = movesOf(checkout);
+        if (pendingAdoption(checkout, moving)) continue;
+        const { inspection, bumped, staleLock } = bumpRanges(checkout);
         const relocked = bumped || staleLock || releases.some((release) => release.ahead);
-        if (relocked) relockAndCheck(checkout);
-        if (commitOwned(checkout, inspection.packagePaths, relocked)) committed.add(checkout.dir);
-        followers.push(checkout);
+        try {
+          if (relocked) relockAndCheck(checkout);
+          if (commitOwned(checkout, inspection.packagePaths, relocked)) committed.add(checkout.dir);
+        } catch (error) {
+          if (!(error instanceof Abort)) throw error;
+          restore(checkout, inspection.packagePaths);
+          if (!(error instanceof CheckFailed) || moving.length === 0) throw error;
+          // It fails against the candidates: it adopts them on a branch, and the lane goes on.
+          console.log(`✗ ${error.message} against the candidates — it adopts them on a branch`);
+          adopt(checkout, moving);
+          continue;
+        }
+        followers.push({ checkout, onBranch: false });
 
         for (const { entry, local, remote, ahead } of releases) {
           if (ahead) {
@@ -463,40 +662,39 @@ if (command === 'train') {
           } else if (section[entry.name] === local) {
             console.log(`✓ ${entry.name}@${local} already on npm and blessed`);
             continue;
+          } else if (manifest.candidates?.[entry.name] === local) {
+            console.log(`✓ ${entry.name}@${local} already on npm and a candidate`);
+            continue;
           } else {
-            // Published outside the train, or by a train whose lane later failed: bless it now.
-            console.log(`✓ ${entry.name}@${local} already on npm — blessing it`);
+            // Published outside the train, or by a train whose lane later failed.
+            console.log(`✓ ${entry.name}@${local} already on npm — recording it as a candidate`);
           }
-          section[entry.name] = local;
-          laneBlessed.push(`${entry.name}@${local}`);
+          manifest.candidates = { ...manifest.candidates, [entry.name]: local };
+          laneRecorded.push(`${entry.name}@${local}`);
         }
       }
-      if (laneBlessed.length > 0) {
-        effect(`bless ${laneBlessed.join(', ')} in versions.json`, undefined, () =>
-          writeManifest(manifest),
-        );
-        bomDirty = true;
-        blessed.push(...laneBlessed);
-      }
+      recorded.push(...laneRecorded);
       console.log(
-        `${lane} lane blessed: ${laneBlessed.length === 0 ? 'nothing new' : laneBlessed.join(', ')}`,
+        `${lane} lane candidates: ${laneRecorded.length === 0 ? 'nothing new' : laneRecorded.join(', ')}`,
       );
     } catch (error) {
       if (!(error instanceof Abort)) throw error;
       for (const name of Object.keys(section)) delete section[name];
       Object.assign(section, before);
+      manifest.candidates = candidatesBefore;
+      failedLanes.add(lane);
       failed.push(`${lane} lane`);
       console.error(`✗ ${error.message} — ${lane} lane stopped; its BOM entries are unchanged`);
-      if (laneBlessed.length > 0) {
+      if (laneRecorded.length > 0) {
         console.error(
-          `  published but not blessed: ${laneBlessed.join(', ')} — the next train blesses them`,
+          `  published but not recorded: ${laneRecorded.join(', ')} — the next train records them`,
         );
       }
     }
   }
 
-  // Consumers publish nothing. They follow every blessed set, after all lanes, and their
-  // changes go through review: committed on a branch, never onto the default branch.
+  // Consumers publish nothing. They follow every blessed set and its candidates, after all
+  // lanes, and their changes go through review on a branch: the checkout itself stays on main.
   if (plan.consumers.length > 0 || plan.missingConsumers.length > 0) {
     console.log(
       `\n═ consumers: ${plan.consumers.map((checkout) => checkout.name).join(' → ') || '(none)'}`,
@@ -513,42 +711,75 @@ if (command === 'train') {
   for (const checkout of plan.consumers) {
     console.log(`\n▸ ${checkout.name} — ${checkout.dir} (${laneLabel(checkout)})`);
     if (!ready(checkout)) {
-      skipped.push(checkout.name);
+      skip(checkout);
+      continue;
+    }
+    const moving = movesOf(checkout);
+    if (pendingAdoption(checkout, moving)) continue;
+    const { inspection, bumped, staleLock } = bumpRanges(checkout);
+    if (!bumped && !staleLock) {
+      console.log('✓ already on the blessed set');
       continue;
     }
     try {
-      const { inspection, bumped, staleLock } = bumpRanges(checkout);
-      if (!bumped && !staleLock) {
-        console.log('✓ already on the blessed set');
-        continue;
-      }
       relockAndCheck(checkout);
-      const base = offDefaultBranch(checkout.dir)?.main ?? currentBranch(checkout.dir);
-      const branch = freeBranch(
-        checkout.dir,
-        `train/ecosystem-sync-${new Date().toISOString().slice(0, 10)}`,
-      );
-      const switched = effect(
-        `create review branch ${branch} in ${checkout.name}`,
-        true,
-        () => git(checkout.dir, 'switch', '-c', branch).status === 0,
-      );
-      if (!switched) throw new Abort(`could not create ${branch} in ${checkout.name}`);
-      followers.push(checkout);
-      if (commitOwned(checkout, inspection.packagePaths, true)) {
-        reviewBranches.push({ dir: checkout.dir, branch, base });
-        if (!dryRun) {
-          console.log(`committed on ${branch} for review; the checkout stays on it until merged`);
-        }
-      }
+      reviewBranch(checkout, inspection.packagePaths);
     } catch (error) {
       if (!(error instanceof Abort)) throw error;
+      restore(checkout, inspection.packagePaths);
+      if (error instanceof CheckFailed && moving.length > 0) {
+        console.log(`✗ ${error.message} against the candidates — it adopts them on a branch`);
+        adopt(checkout, moving);
+        continue;
+      }
       failed.push(checkout.name);
-      console.error(`✗ ${error.message} — its working tree is left as is for inspection`);
+      held.push({ name: checkout.name, moving });
+      console.error(`✗ ${error.message} — its checkout is back on its default branch`);
     }
   }
 
-  console.log(`\nblessed: ${blessed.length === 0 ? 'nothing' : blessed.join(', ')}`);
+  // A candidate is blessed once no dependent still has to adopt it: every repo that uses it
+  // passed its check against it, here or in an adoption PR that has since merged.
+  const waiting = new Set([...adoptions, ...held].flatMap((entry) => entry.moving));
+  const promotable = Object.keys(manifest.candidates ?? {}).filter((name) => {
+    const lane = laneOf(manifest, name);
+    return !!lane && lanes.includes(lane) && !failedLanes.has(lane) && !waiting.has(name);
+  });
+  const promoted = promoteCandidates(manifest, promotable);
+  const bomDirty = recorded.length > 0 || promoted.length > 0;
+  if (bomDirty) {
+    effect('write the candidates and blessings to versions.json', undefined, () =>
+      writeManifest(manifest),
+    );
+  }
+
+  console.log(`\nblessed: ${promoted.length === 0 ? 'nothing' : promoted.join(', ')}`);
+  const candidates = Object.entries(manifest.candidates ?? {});
+  if (candidates.length > 0) {
+    console.log('candidates (check accepts them; not yet blessed):');
+    for (const [name, version] of candidates) {
+      const waitingOn = [
+        ...adoptions
+          .filter((adoption) => adoption.moving.includes(name))
+          .map((adoption) => `${adoption.name} (${adoption.branch})`),
+        ...held
+          .filter((entry) => entry.moving.includes(name))
+          .map((entry) => `${entry.name} (not verified this run)`),
+      ];
+      console.log(
+        `  ${name}@${version}${waitingOn.length === 0 ? '' : ` — waiting on ${waitingOn.join(', ')}`}`,
+      );
+    }
+  }
+  if (adoptions.length > 0) {
+    console.log('adoptions pending (merge each PR, then run the train again to bless):');
+    for (const adoption of adoptions) {
+      const url = adoption.opened || dryRun ? null : prUrl(adoption.dir, adoption.branch);
+      console.log(
+        `  ${adoption.name}: ${adoption.branch}${adoption.opened ? ' (opened this run)' : ''}${url ? ` ${url}` : ''}`,
+      );
+    }
+  }
   if (skipped.length > 0) console.log(`skipped: ${skipped.join(', ')}`);
   if (failed.length > 0) console.log(`failed: ${failed.join(', ')}`);
 
@@ -590,26 +821,29 @@ if (command === 'train') {
         process.exit(1);
       }
     });
-    effect(
-      `commit "chore: bless ${blessed.join(', ')} — ${version}" in @inixiative/config`,
-      undefined,
-      () => {
-        spawnSync('git', ['add', '--', 'package.json', 'versions.json', 'test/fixtures'], {
-          cwd: packageRoot,
-        });
-        if (spawnSync('git', ['diff', '--cached', '--quiet'], { cwd: packageRoot }).status === 0)
-          return;
-        const commit = spawnSync(
-          'git',
-          ['commit', '-m', `chore: bless ${blessed.join(', ')} — ${version}`],
-          { cwd: packageRoot, stdio: 'inherit' },
-        );
-        if (commit.status !== 0) {
-          console.error('✗ commit failed in @inixiative/config — aborting before publish');
-          process.exit(1);
-        }
-      },
-    );
+    const message = `chore: ${
+      [
+        promoted.length > 0 ? `bless ${promoted.join(', ')}` : '',
+        recorded.length > 0 ? `candidate ${recorded.join(', ')}` : '',
+      ]
+        .filter(Boolean)
+        .join('; ') || 'release'
+    } — ${version}`;
+    effect(`commit "${message}" in @inixiative/config`, undefined, () => {
+      spawnSync('git', ['add', '--', 'package.json', 'versions.json', 'test/fixtures'], {
+        cwd: packageRoot,
+      });
+      if (spawnSync('git', ['diff', '--cached', '--quiet'], { cwd: packageRoot }).status === 0)
+        return;
+      const commit = spawnSync('git', ['commit', '-m', message], {
+        cwd: packageRoot,
+        stdio: 'inherit',
+      });
+      if (commit.status !== 0) {
+        console.error('✗ commit failed in @inixiative/config — aborting before publish');
+        process.exit(1);
+      }
+    });
     effect(`publish @inixiative/config@${version} to npm`, undefined, () => {
       const publish = spawnSync('npm', ['publish'], { cwd: packageRoot, stdio: 'inherit' });
       if (publish.status !== 0 || !servedByRegistry('@inixiative/config', version)) {
@@ -620,15 +854,16 @@ if (command === 'train') {
     });
     committed.add(packageRoot);
 
-    // Every checkout this train re-locked still pins the previous @inixiative/config, which
-    // `check` now reports as stale: bring each onto the release it just blessed.
+    // Every checkout and branch this train re-locked still pins the previous @inixiative/config,
+    // which `check` now reports as stale: bring each onto the release it just made. An adoption
+    // branch needs it most — its CI accepts the candidates only through this release.
     if (followers.length > 0) console.log(`\n═ re-lock onto @inixiative/config@${version}`);
-    for (const checkout of followers) {
+    for (const { checkout, onBranch } of followers) {
       try {
         const { inspection, bumped, staleLock } = bumpRanges(checkout);
         if (!bumped && !staleLock) continue;
         relockAndCheck(checkout, false);
-        if (commitOwned(checkout, inspection.packagePaths, true) && !checkout.consumer)
+        if (commitOwned(checkout, inspection.packagePaths, true) && !onBranch)
           committed.add(checkout.dir);
         if (!dryRun) console.log(`✓ ${checkout.name} locked to @inixiative/config@${version}`);
       } catch (error) {
@@ -676,6 +911,15 @@ if (command === 'train') {
     }
   }
   process.exit(failed.length > 0 ? 1 : 0);
+}
+
+/** The open PR for `branch`, if gh can say. */
+function prUrl(cwd: string, branch: string): string | null {
+  const view = spawnSync('gh', ['pr', 'view', branch, '--json', 'url', '--jq', '.url'], {
+    cwd,
+    encoding: 'utf8',
+  });
+  return view.status === 0 ? view.stdout.trim() || null : null;
 }
 
 function currentBranch(cwd: string): string {
