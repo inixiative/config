@@ -357,7 +357,11 @@ if (command === 'train') {
   /** Re-lock onto the blessed set and, unless told otherwise, run the repo's own check. */
   const relockAndCheck = (checkout: Checkout, check = true) =>
     effect(`re-lock ${checkout.name}${check ? ' and run its check' : ''}`, undefined, () => {
-      if (spawnSync('bun', ['install'], { cwd: checkout.dir, stdio: 'inherit' }).status !== 0) {
+      // bun caches registry manifests, so a version the train just published can look missing.
+      const install = (...flags: string[]) =>
+        spawnSync('bun', ['install', ...flags], { cwd: checkout.dir, stdio: 'inherit' }).status ===
+        0;
+      if (!install() && !install('--no-cache')) {
         throw new Abort(`bun install failed in ${checkout.name}`);
       }
       for (const { cwd, names } of staleUpdates(
@@ -495,6 +499,7 @@ if (command === 'train') {
               ? `chore: adopt ${moving.map((name) => `${name}@${manifest.candidates?.[name]}`).join(', ')}`
               : undefined;
           if (!commitOwned(branchCheckout, packagePaths, true, message)) {
+            console.log(`✓ nothing to commit for ${checkout.name} after its re-lock`);
             dropBranch(checkout, branch);
             return false;
           }
