@@ -13,7 +13,7 @@
     "@types/bun"
   ],
   "ecosystem": {
-    "@inixiative/config": "0.5.89",
+    "@inixiative/config": "0.5.90",
     "@inixiative/json-rules": "3.5.4",
     "@inixiative/permissions": "0.4.0",
     "@inixiative/transitions": "0.5.0",
@@ -25,7 +25,7 @@
   "agentic": {
     "@inixiative/signet": "0.4.1",
     "@inixiative/archive": "0.20.0",
-    "@inixiative/agent-session": "0.6.5",
+    "@inixiative/agent-session": "0.6.6",
     "@inixiative/foundry-core": "0.5.2",
     "@inixiative/foundry": "0.5.4",
     "@inixiative/foundry-acp": "0.1.2"
@@ -48,8 +48,5 @@
         "agentic"
       ]
     }
-  },
-  "candidates": {
-    "@inixiative/agent-session": "0.6.6"
   }
 }
