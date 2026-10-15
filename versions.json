@@ -13,7 +13,7 @@
     "@types/bun"
   ],
   "ecosystem": {
-    "@inixiative/config": "0.5.87",
+    "@inixiative/config": "0.5.88",
     "@inixiative/json-rules": "3.5.4",
     "@inixiative/permissions": "0.4.0",
     "@inixiative/transitions": "0.5.0",
@@ -23,11 +23,11 @@
     "@inixiative/gloss": "0.0.5"
   },
   "agentic": {
-    "@inixiative/signet": "0.4.0",
+    "@inixiative/signet": "0.4.1",
     "@inixiative/archive": "0.20.0",
     "@inixiative/agent-session": "0.6.5",
-    "@inixiative/foundry-core": "0.5.1",
-    "@inixiative/foundry": "0.5.3",
+    "@inixiative/foundry-core": "0.5.2",
+    "@inixiative/foundry": "0.5.4",
     "@inixiative/foundry-acp": "0.1.2"
   },
   "consumers": {
@@ -48,10 +48,5 @@
         "agentic"
       ]
     }
-  },
-  "candidates": {
-    "@inixiative/signet": "0.4.1",
-    "@inixiative/foundry-core": "0.5.2",
-    "@inixiative/foundry": "0.5.4"
   }
 }
