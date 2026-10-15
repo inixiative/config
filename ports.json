@@ -13,6 +13,7 @@
     "postgres": 5432,
     "redis": 6379,
     "api": 8000,
+    "decisions": 8180,
     "muninn": 8475,
     "muninnUi": 8476,
     "minio": 9000,
