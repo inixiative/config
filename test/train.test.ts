@@ -200,11 +200,16 @@ const offlineTrain = () => {
     'package.json': {
       name: '@inixiative/foundry',
       version: '0.5.0',
-      scripts: { 'train:adopt': 'bun run test:live' },
+      // Its own worktree tooling, as template-based repos have; the shimmed bun stands in for it.
+      scripts: {
+        'train:adopt': 'bun run test:live',
+        'worktree:create': './scripts/worktree/create.sh',
+        'worktree:destroy': './scripts/worktree/destroy.sh',
+      },
       dependencies: { '@inixiative/archive': '^0.18.0' },
     },
     'needs-adopt': '',
-    '.gitignore': '.env*\n',
+    '.gitignore': '.env*\n.worktrees/\n',
     // Ignored, so git leaves it out of a worktree; the adoption still needs it.
     'apps/api/.env.local': 'SECRET=1\n',
   });
@@ -250,6 +255,8 @@ esac`,
     `case "$1 $2" in
 "run check") [ -f needs-adopt ] && [ ! -f adopted ] && { touch generated.txt; exit 1; }; exit 0 ;;
 "run train:adopt") [ -f apps/api/.env.local ] && touch adopted ;;
+"run worktree:create") exec "${realGit}" worktree add -q -b "$4" ".worktrees/$(echo "$4" | tr / -)" "$3" ;;
+"run worktree:destroy") exec "${realGit}" worktree remove --force ".worktrees/$3" ;;
 esac
 exit 0`,
   );
@@ -277,14 +284,15 @@ exit 0`,
   };
   const bom = () => JSON.parse(readFileSync(join(config, 'versions.json'), 'utf8'));
   const at = (name: string) => join(root, name);
-  return { train, bom, at, config, registry, log };
+  const calls = () => readFileSync(log, 'utf8');
+  return { train, bom, at, config, registry, log, calls };
 };
 
 const gitOut = (dir: string, ...args: string[]) => run(dir, realGit, ...args).stdout;
 
 describe('two-phase blessing', () => {
   test('candidate → adoption PR → promoted once it merges', () => {
-    const { train, bom, at, config, registry } = offlineTrain();
+    const { train, bom, at, config, registry, calls } = offlineTrain();
 
     // Run 1: archive 0.19.0 publishes and becomes a candidate. Foundry's check fails against it
     // (and litters its tree), so the train opens an adoption branch instead of stopping. Oracle
@@ -323,6 +331,10 @@ describe('two-phase blessing', () => {
         'chore: adopt @inixiative/archive@0.19.0',
       );
     }
+    // Foundry's adoption came from its own worktree tooling, destroyed the same way; oracle has
+    // none, so it got a plain linked worktree.
+    expect(calls()).toContain('bun run worktree:create main train/adopt-archive-0.19.0');
+    expect(calls()).toContain('bun run worktree:destroy train-adopt-archive-0.19.0 --force');
     // train:adopt ran with the checkout's nested, ignored env file in place.
     expect(gitOut(at('foundry'), 'ls-tree', '--name-only', adoption)).toContain('adopted');
 

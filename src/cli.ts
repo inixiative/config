@@ -285,11 +285,18 @@ if (command === 'train') {
   /** Checkouts this run walked to an outcome; every other repo is unverified. */
   const walked = new Set<string>();
   /** Linked worktrees the train committed branches in, removed however it ends. */
-  const worktrees: { repo: string; path: string }[] = [];
+  const worktrees: { repo: string; path: string; tooling: boolean }[] = [];
+  /** A repo's own `worktree:destroy` frees what its `worktree:create` allocated (databases, ports). */
+  const removeWorktree = ({ repo, path, tooling }: (typeof worktrees)[number]) => {
+    if (tooling) {
+      spawnSync('bun', ['run', 'worktree:destroy', basename(path), '--force'], {
+        cwd: repo,
+        stdio: 'inherit',
+      });
+    } else git(repo, 'worktree', 'remove', '--force', path);
+  };
   process.on('exit', () => {
-    for (const { repo, path } of worktrees.splice(0)) {
-      git(repo, 'worktree', 'remove', '--force', path);
-    }
+    for (const entry of worktrees.splice(0)) removeWorktree(entry);
   });
   /** What repos move onto: the blessed sets with every candidate in place. */
   const target = () => adoptionTarget(manifest);
@@ -450,11 +457,21 @@ if (command === 'train') {
    * `train:adopt` find the same credentials and settings as in the checkout.
    */
   const worktree = (checkout: Checkout, branch: string): Checkout => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inixiative-train-')), basename(checkout.dir));
-    if (git(checkout.dir, 'worktree', 'add', '--quiet', '-b', branch, path, 'HEAD').status !== 0) {
-      throw new Abort(`could not create ${branch} in ${checkout.name}`);
-    }
-    worktrees.push({ repo: checkout.dir, path });
+    // A repo with its own worktree tooling (template, Kingdom, Tribe) forbids hand-made worktrees:
+    // its `worktree:create <base> <branch>` allocates the slot's databases and env, under
+    // `.worktrees/<branch with / as ->`.
+    const tooling = !!checkout.pkg.scripts?.['worktree:create'];
+    const path = tooling
+      ? join(checkout.dir, '.worktrees', branch.replaceAll('/', '-'))
+      : join(mkdtempSync(join(tmpdir(), 'inixiative-train-')), basename(checkout.dir));
+    const created = tooling
+      ? spawnSync('bun', ['run', 'worktree:create', defaultBranch(checkout.dir), branch], {
+          cwd: checkout.dir,
+          stdio: 'inherit',
+        }).status === 0 && existsSync(path)
+      : git(checkout.dir, 'worktree', 'add', '--quiet', '-b', branch, path, 'HEAD').status === 0;
+    if (!created) throw new Abort(`could not create ${branch} in ${checkout.name}`);
+    worktrees.push({ repo: checkout.dir, path, tooling });
     const envFiles = git(
       checkout.dir,
       'ls-files',
@@ -483,7 +500,7 @@ if (command === 'train') {
       (tree) => tree.repo === checkout.dir && currentBranch(tree.path) === branch,
     );
     if (entry) {
-      git(checkout.dir, 'worktree', 'remove', '--force', entry.path);
+      removeWorktree(entry);
       worktrees.splice(worktrees.indexOf(entry), 1);
     }
     git(checkout.dir, 'branch', '-D', branch);
