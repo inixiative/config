@@ -13,7 +13,7 @@
     "@types/bun"
   ],
   "ecosystem": {
-    "@inixiative/config": "0.5.103",
+    "@inixiative/config": "0.5.104",
     "@inixiative/json-rules": "3.5.4",
     "@inixiative/permissions": "0.4.0",
     "@inixiative/transitions": "0.5.0",
@@ -51,7 +51,7 @@
   },
   "candidates": {
     "@inixiative/foundry-core": "0.5.6",
-    "@inixiative/gloss": "0.0.6",
-    "@inixiative/atlas": "0.3.0"
+    "@inixiative/gloss": "0.1.0",
+    "@inixiative/atlas": "0.4.0"
   }
 }
