@@ -1,5 +1,5 @@
 {
-  "$comment": "Local port registry. A project's port for a service is the service's default plus 100 times the project's block, so projects never collide and none uses a default. Add a project at the next free block; add a service with its usual default.",
+  "$comment": "Local port registry. A project's port for a service is the service's default plus 100 times the project's block, so projects never collide. Zealot sits at block 0, the defaults, by Aron's choice 2026-10-20; every other project is off the defaults. Add a project at the next free block; add a service with its usual default.",
   "blockSize": 100,
   "reserved": {
     "5000": "macOS AirPlay Receiver",
@@ -22,7 +22,7 @@
     "template": 1,
     "kingdom": 2,
     "tribe": 3,
-    "zealot": 4,
+    "zealot": 0,
     "foundry": 5,
     "oracle": 6,
     "archive": 7

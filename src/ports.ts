@@ -14,13 +14,15 @@ export function portsFor(project: Project): Record<Service, number> {
   ) as Record<Service, number>;
 }
 
-/** Ports claimed twice, or a project sitting on a default; empty when the registry is sound. */
+/** Ports claimed twice, or a project other than the block-0 one sitting on a default; empty when the registry is sound. */
 export function portConflicts(): string[] {
   const claimed = new Map<number, string>(
     Object.entries(registry.reserved).map(([port, owner]) => [Number(port), owner]),
   );
-  for (const [service, port] of Object.entries(registry.services))
-    claimed.set(port, `default ${service}`);
+  // The block-0 project owns the defaults; without one, the defaults stay free for other tools.
+  if (!Object.values(registry.projects).includes(0))
+    for (const [service, port] of Object.entries(registry.services))
+      claimed.set(port, `default ${service}`);
   const conflicts: string[] = [];
   for (const project of projects)
     for (const [service, port] of Object.entries(portsFor(project))) {
