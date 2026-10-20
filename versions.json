@@ -13,7 +13,7 @@
     "@types/bun"
   ],
   "ecosystem": {
-    "@inixiative/config": "0.5.117",
+    "@inixiative/config": "0.5.118",
     "@inixiative/json-rules": "3.5.4",
     "@inixiative/permissions": "0.4.0",
     "@inixiative/transitions": "0.5.0",
@@ -23,7 +23,7 @@
     "@inixiative/gloss": "0.1.1"
   },
   "agentic": {
-    "@inixiative/signet": "0.4.6",
+    "@inixiative/signet": "0.5.1",
     "@inixiative/archive": "0.23.0",
     "@inixiative/agent-session": "0.6.7",
     "@inixiative/foundry-core": "0.5.9",
@@ -52,7 +52,6 @@
   "candidates": {
     "@inixiative/atlas": "0.4.0",
     "@inixiative/archive": "0.24.0",
-    "@inixiative/permissions": "0.5.0",
-    "@inixiative/signet": "0.5.1"
+    "@inixiative/permissions": "0.5.0"
   }
 }
