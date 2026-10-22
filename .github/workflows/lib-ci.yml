@@ -1,6 +1,17 @@
 name: lib-ci
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      cache-path:
+        description: A path to restore before the checks and save after them (a fixture a suite downloads, for one). Off when empty.
+        type: string
+        required: false
+        default: ''
+      cache-key:
+        description: The cache entry's name; the runner's OS and architecture are prefixed.
+        type: string
+        required: false
+        default: ''
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -9,6 +20,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
+      - if: inputs.cache-path != ''
+        uses: actions/cache@v4
+        with:
+          path: ${{ inputs.cache-path }}
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key }}
       - run: bun install --frozen-lockfile
       - run: bunx inixiative-config check .
       - run: bun run check
