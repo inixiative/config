@@ -52,7 +52,7 @@
   "candidates": {
     "@inixiative/atlas": "0.4.1",
     "@inixiative/archive": "0.24.0",
-    "@inixiative/permissions": "0.9.1",
+    "@inixiative/permissions": "0.9.2",
     "@inixiative/agent-session": "0.6.8",
     "@inixiative/foundry": "0.5.5",
     "@inixiative/json-rules": "3.11.0"
