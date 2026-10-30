@@ -13,7 +13,7 @@
     "@types/bun"
   ],
   "ecosystem": {
-    "@inixiative/config": "0.5.142",
+    "@inixiative/config": "0.5.143",
     "@inixiative/json-rules": "3.5.4",
     "@inixiative/permissions": "0.4.0",
     "@inixiative/transitions": "0.6.0",
@@ -55,7 +55,7 @@
     "@inixiative/permissions": "0.13.1",
     "@inixiative/agent-session": "0.6.8",
     "@inixiative/foundry": "0.5.5",
-    "@inixiative/json-rules": "3.14.0",
+    "@inixiative/json-rules": "3.15.0",
     "@inixiative/prisma-map": "0.4.0"
   }
 }
