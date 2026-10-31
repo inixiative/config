@@ -21,7 +21,7 @@
   "projects": {
     "template": 1,
     "kingdom": 2,
-    "tribe": 3,
+    "monorepo": 3,
     "zealot": 0,
     "foundry": 5,
     "oracle": 6,

@@ -10,6 +10,7 @@ test('every project gets its own ports, only zealot on the defaults, none shared
 test('a project port is the service default plus its block', () => {
   expect(portsFor('archive')).toMatchObject({ http: 4700, postgres: 6132 });
   expect(portsFor('kingdom')).toMatchObject({ web: 3200, api: 8200, postgres: 5632, redis: 6579 });
+  expect(portsFor('monorepo')).toMatchObject({ web: 3300, postgres: 5732 });
   expect(portsFor('zealot')).toMatchObject({ web: 3000, api: 8000, postgres: 5432, redis: 6379 });
 });
 
