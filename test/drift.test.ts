@@ -166,6 +166,35 @@ describe('committed lockfile', () => {
   });
 });
 
+describe('scratch directory', () => {
+  test('flags and self-heals a git repo whose tmp/ is not ignored', () => {
+    const dir = clone('consumer-node');
+    Bun.spawnSync(['git', 'init'], { cwd: dir, stdout: 'ignore', stderr: 'ignore' });
+    writeFileSync(join(dir, '.gitignore'), 'node_modules\n');
+
+    const unignored = inspect(dir, manifest).findings.find((finding) =>
+      finding.message.includes('tmp/ is not gitignored'),
+    );
+    expect(unignored).toBeDefined();
+    unignored?.fix?.();
+    expect(readFileSync(join(dir, '.gitignore'), 'utf8')).toBe('node_modules\n/tmp/\n');
+
+    const after = inspect(dir, manifest).findings.map((finding) => finding.message);
+    expect(after).not.toContainEqual(expect.stringContaining('tmp/ is not gitignored'));
+  });
+
+  test('creates .gitignore when a git repo has none', () => {
+    const dir = clone('consumer-node');
+    Bun.spawnSync(['git', 'init'], { cwd: dir, stdout: 'ignore', stderr: 'ignore' });
+    rmSync(join(dir, '.gitignore'), { force: true });
+
+    inspect(dir, manifest)
+      .findings.find((finding) => finding.message.includes('tmp/ is not gitignored'))
+      ?.fix?.();
+    expect(readFileSync(join(dir, '.gitignore'), 'utf8')).toBe('/tmp/\n');
+  });
+});
+
 describe('lefthook standardization', () => {
   test('enforces lefthook dep, config stub, and prepare script in git repos', () => {
     const dir = clone('consumer-node');
