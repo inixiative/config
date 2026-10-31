@@ -810,16 +810,17 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
   const lockText = existsSync(lockPath) ? readFileSync(lockPath, 'utf8') : null;
 
   if (existsSync(join(dir, '.git'))) {
-    const tmpIgnored = spawnSync('git', ['check-ignore', '-q', 'tmp/'], { cwd: dir }).status === 0;
+    const tmpIgnored =
+      spawnSync('git', ['check-ignore', '-q', 'tmp/scratch'], { cwd: dir }).status === 0;
     if (!tmpIgnored) {
       findings.push({
         level: 'error',
-        message: 'tmp/ is not gitignored → adding /tmp/ to .gitignore',
+        message: 'tmp/ is not gitignored → adding /tmp/* to .gitignore',
         fix: () => {
           const gitignorePath = join(dir, '.gitignore');
           const current = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf8') : '';
           const separator = current === '' || current.endsWith('\n') ? '' : '\n';
-          writeFileSync(gitignorePath, `${current}${separator}/tmp/\n`);
+          writeFileSync(gitignorePath, `${current}${separator}/tmp/*\n`);
         },
       });
     }

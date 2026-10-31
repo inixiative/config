@@ -177,10 +177,22 @@ describe('scratch directory', () => {
     );
     expect(unignored).toBeDefined();
     unignored?.fix?.();
-    expect(readFileSync(join(dir, '.gitignore'), 'utf8')).toBe('node_modules\n/tmp/\n');
+    expect(readFileSync(join(dir, '.gitignore'), 'utf8')).toBe('node_modules\n/tmp/*\n');
 
     const after = inspect(dir, manifest).findings.map((finding) => finding.message);
     expect(after).not.toContainEqual(expect.stringContaining('tmp/ is not gitignored'));
+  });
+
+  test('accepts ignored tmp contents with a tracked file re-included', () => {
+    const dir = clone('consumer-node');
+    Bun.spawnSync(['git', 'init'], { cwd: dir, stdout: 'ignore', stderr: 'ignore' });
+    writeFileSync(
+      join(dir, '.gitignore'),
+      'tmp/*\n!tmp/AI_WORKSPACE/\ntmp/AI_WORKSPACE/*\n!tmp/AI_WORKSPACE/README.md\n',
+    );
+
+    const messages = inspect(dir, manifest).findings.map((finding) => finding.message);
+    expect(messages).not.toContainEqual(expect.stringContaining('tmp/ is not gitignored'));
   });
 
   test('creates .gitignore when a git repo has none', () => {
@@ -191,7 +203,7 @@ describe('scratch directory', () => {
     inspect(dir, manifest)
       .findings.find((finding) => finding.message.includes('tmp/ is not gitignored'))
       ?.fix?.();
-    expect(readFileSync(join(dir, '.gitignore'), 'utf8')).toBe('/tmp/\n');
+    expect(readFileSync(join(dir, '.gitignore'), 'utf8')).toBe('/tmp/*\n');
   });
 });
 
