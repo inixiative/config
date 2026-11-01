@@ -13,7 +13,7 @@
     "@types/bun"
   ],
   "ecosystem": {
-    "@inixiative/config": "0.5.161",
+    "@inixiative/config": "0.5.162",
     "@inixiative/json-rules": "3.16.0",
     "@inixiative/permissions": "0.18.0",
     "@inixiative/transitions": "0.6.0",
@@ -52,6 +52,6 @@
   "candidates": {
     "@inixiative/signet": "0.7.0",
     "@inixiative/foundry": "0.5.6",
-    "@inixiative/archive": "0.25.0"
+    "@inixiative/archive": "0.26.0"
   }
 }
