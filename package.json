@@ -1,6 +1,6 @@
 {
   "name": "@inixiative/config",
-  "version": "0.5.162",
+  "version": "0.5.163",
   "description": "Shared toolchain for the inixiative ecosystem: tsconfig/biome/tsup presets, a version manifest (BOM), and a sync/check CLI",
   "type": "module",
   "license": "MIT",
@@ -20,6 +20,7 @@
     "tsconfig",
     "biome",
     "lefthook",
+    "theme",
     "versions.json",
     "README.md",
     "ports.json"
@@ -36,7 +37,10 @@
       "types": "./dist/tsup.d.ts",
       "import": "./dist/tsup.js"
     },
-    "./ports.json": "./ports.json"
+    "./ports.json": "./ports.json",
+    "./theme/public.css": "./theme/public.css",
+    "./theme/agentic.css": "./theme/agentic.css",
+    "./theme/fonts/*": "./theme/fonts/*"
   },
   "scripts": {
     "prepare": "if git rev-parse --git-dir >/dev/null 2>&1; then lefthook install; fi",

@@ -33,6 +33,20 @@ export default node();
 
 Stubs hold `extends` plus minimal reviewed overrides only. This package never generates config bodies.
 
+## Theme
+
+The inixiative look, read at runtime by every app that wears it (Kingdom, Foundry), so a decision about the look lands in all of them with the next release.
+
+| Export | Use |
+| --- | --- |
+| `@inixiative/config/theme/public.css` | the brand: base, `--app-*`, status (`--success` / `--warning` / `--error`), UI and type tokens, plus `@font-face` for Bricolage Grotesque, Instrument Sans and JetBrains Mono |
+| `@inixiative/config/theme/agentic.css` | the status layer (`--status-problem / attention / working / queued / done / idle / archived`) and the badge layer, for apps that show agent work |
+| `@inixiative/config/theme/fonts/*` | the latin variable fonts `public.css` loads (SIL OFL 1.1, texts in `theme/fonts/LICENSES.md`) |
+
+Load `public.css`, then `agentic.css`, then the app's own CSS. Light is `:root`; dark is the `.dark` class on `<html>`. Values are HSL channels: `hsl(var(--app-primary))`, `hsl(var(--border) / .5)`. The fonts load from `./fonts/` relative to `public.css`, so serve the folder as it ships.
+
+Apps load the theme from this package at runtime, so it is a runtime `dependency` of theirs. To keep that cheap this package has no runtime dependencies and every peer is optional; a test holds both.
+
 ## versions.json (the BOM)
 
 One version of `@inixiative/config` names one coherent ecosystem state:
