@@ -1,0 +1,112 @@
+/*
+ * @inixiative/config/theme/public.css — the public inixiative look (Kingdom's brand).
+ *
+ * One source for every app that wears it (Kingdom, Foundry). Load it before the app's own CSS.
+ * Laid out like template `packages/shared/styles/theme.css`: Base → App theme (--app-*) → Status → UI → Type.
+ * Values are HSL channels, used as hsl(var(--x)) or hsl(var(--x) / .12).
+ * Light is the default (:root); dark is the `.dark` class on <html>, as in template and Kingdom.
+ * Colour meaning: lime = yours / live (--app-primary), blue = shared (--app-tertiary), pink = Signet (--app-quaternary).
+ * Thread and work status colours are a separate layer: theme/agentic.css.
+ */
+
+@font-face {
+  font-family: "Instrument Sans";
+  src: url("./fonts/instrument-sans-latin-wght-normal.woff2") format("woff2-variations");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Bricolage Grotesque";
+  src: url("./fonts/bricolage-grotesque-latin-wght-normal.woff2") format("woff2-variations");
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2-variations");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* Base */
+  --background: 70 25% 96%;
+  --foreground: 206 29% 7%;
+
+  /* App theme */
+  --app-primary: 84 69% 24%;
+  --app-primary-foreground: 70 25% 97%;
+  --app-secondary: 80 14% 91%;
+  --app-secondary-foreground: 206 29% 10%;
+  --app-tertiary: 211 72% 42%;
+  --app-tertiary-foreground: 0 0% 100%;
+  --app-quaternary: 318 45% 44%;
+  --app-quaternary-foreground: 0 0% 100%;
+  --app-accent: 80 14% 91%;
+  --app-accent-foreground: 206 29% 10%;
+
+  /* Status */
+  --success: 142 60% 30%;
+  --warning: 32 90% 38%;
+  --error: 6 72% 48%;
+  --error-foreground: 0 0% 100%;
+
+  /* UI */
+  --card: 0 0% 100%;
+  --card-foreground: 206 29% 7%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 206 29% 7%;
+  --muted: 80 14% 93%;
+  --muted-foreground: 199 8% 36%;
+  --subtle-foreground: 199 7% 44%; /* third text tier: meta lines, turn numbers */
+  --border: 87 12% 86%;
+  --input: 87 12% 82%;
+  --ring: 84 69% 30%;
+  --radius: 0.75rem;
+
+  /* Type */
+  --font-display: "Bricolage Grotesque", system-ui, sans-serif;
+  --font-sans: "Instrument Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+.dark {
+  /* Base */
+  --background: 206 29% 6%;
+  --foreground: 96 17% 94%;
+
+  /* App theme */
+  --app-primary: 83 88% 73%;
+  --app-primary-foreground: 206 29% 6%;
+  --app-secondary: 204 25% 12%;
+  --app-secondary-foreground: 96 17% 94%;
+  --app-tertiary: 211 100% 79%;
+  --app-tertiary-foreground: 206 29% 6%;
+  --app-quaternary: 315 67% 83%;
+  --app-quaternary-foreground: 206 29% 6%;
+  --app-accent: 203 24% 11%;
+  --app-accent-foreground: 96 17% 94%;
+
+  /* Status */
+  --success: 83 88% 73%;
+  --warning: 38 87% 69%;
+  --error: 7 100% 74%;
+  --error-foreground: 206 29% 6%;
+
+  /* UI */
+  --card: 202 26% 8%;
+  --card-foreground: 96 17% 94%;
+  --popover: 203 24% 10%;
+  --popover-foreground: 96 17% 94%;
+  --muted: 204 25% 12%;
+  --muted-foreground: 199 9% 63%;
+  --subtle-foreground: 199 8% 54%; /* 4.5:1 on the dark background */
+  --border: 202 22% 15%;
+  --input: 204 22% 19%;
+  --ring: 83 88% 73%;
+}

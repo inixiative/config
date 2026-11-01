@@ -1,0 +1,38 @@
+/*
+ * @inixiative/config/theme/agentic.css — the status and badge layers for agentic apps (Foundry, Kingdom).
+ *
+ * Load after theme/public.css. Light is :root, dark is `.dark`, like public.css.
+ *
+ * Status: what a thread or piece of work is doing. Colour = category; an icon's shape = the state within it.
+ *   problem   red          can't proceed (error, quota, connectivity, missing permission or credential, Signet ended)
+ *   attention orange       needs you (new arrival, the agent asks, coworker request, Signet request); not an error
+ *   working   green        working; a truer green than lime, which means "yours"
+ *   queued    light yellow queued, will run
+ *   done      light blue   done; cyan-leaning so it never reads as Kingdom's shared blue
+ *   idle      neutral      idle, paused
+ *   archived  charcoal     archived, off your attention; darker than idle
+ * Badge: the one extra fact a row may carry (shared, unread, prompts). Never a status colour.
+ */
+
+:root {
+  --status-problem: 0 72% 46%;
+  --status-attention: 24 90% 44%;
+  --status-working: 142 62% 32%;
+  --status-queued: 45 90% 38%;
+  --status-done: 190 70% 35%;
+  --status-idle: 199 8% 45%;
+  --status-archived: 205 10% 62%;
+
+  --badge-ink: var(--foreground);
+  --badge-knockout: var(--background);
+}
+
+.dark {
+  --status-problem: 0 84% 64%;
+  --status-attention: 24 96% 61%;
+  --status-working: 142 64% 58%;
+  --status-queued: 54 92% 74%;
+  --status-done: 186 72% 70%;
+  --status-idle: 199 9% 63%;
+  --status-archived: 205 12% 42%; /* 3:1 on the dark background */
+}
