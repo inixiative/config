@@ -1,6 +1,6 @@
 {
   "name": "@inixiative/config",
-  "version": "0.5.183",
+  "version": "0.5.184",
   "description": "Shared toolchain for the inixiative ecosystem: tsconfig/biome/tsup presets, a version manifest (BOM), and a sync/check CLI",
   "type": "module",
   "license": "MIT",
@@ -39,7 +39,9 @@
     },
     "./ports.json": "./ports.json",
     "./theme/public.css": "./theme/public.css",
-    "./theme/agentic.css": "./theme/agentic.css",
+    "./theme/status.css": "./theme/status.css",
+    "./theme/domains.css": "./theme/domains.css",
+    "./theme/marketing.css": "./theme/marketing.css",
     "./theme/fonts/*": "./theme/fonts/*"
   },
   "scripts": {

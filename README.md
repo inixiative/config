@@ -6,44 +6,32 @@ Shared toolchain for the inixiative ecosystem: tsconfig/biome/tsup presets, a ve
 
 | Export | Use |
 | --- | --- |
-| `@inixiative/config/tsconfig/base.json` | bun library (bundler resolution, verbatimModuleSyntax, `types: ["bun"]`) |
-| `@inixiative/config/tsconfig/node.json` | base + `types: ["node"]` |
-| `@inixiative/config/tsconfig/react.json` | base + DOM lib + `jsx: react-jsx` |
-| `@inixiative/config/biome/base.json` | formatter + linter core (single quotes, lineWidth 100, recommended + strictness block) |
-| `@inixiative/config/biome/react.json` | overlay: hook dependency linting |
-| `@inixiative/config/tsup` | `node(options)` / `react(options)` build presets |
-| `@inixiative/config/lefthook/base.yml` | pre-commit hooks: typecheck + biome on staged files |
-
-Adoption is three stub files plus the devDependency:
-
-```jsonc
-// tsconfig.json
-{ "extends": "@inixiative/config/tsconfig/base.json", "exclude": ["dist"] }
-
-// biome.json
-{ "extends": ["@inixiative/config/biome/base.json"] }
-```
-
-```ts
-// tsup.config.ts
-import { node } from '@inixiative/config/tsup';
-
-export default node();
-```
-
-Stubs hold `extends` plus minimal reviewed overrides only. This package never generates config bodies.
-
-## Theme
-
-The inixiative look, read at runtime by every app that wears it (Kingdom, Foundry), so a decision about the look lands in all of them with the next release.
-
-| Export | Use |
-| --- | --- |
-| `@inixiative/config/theme/public.css` | the brand: base, `--app-*`, status (`--success` / `--warning` / `--error`), UI and type tokens, plus `@font-face` for Bricolage Grotesque, Instrument Sans and JetBrains Mono |
-| `@inixiative/config/theme/agentic.css` | the status layer (`--status-problem / attention / working / queued / done / idle / archived`) and the badge layer, for apps that show agent work |
+| `@inixiative/config/theme/public.css` | the brand: base, `--app-*` slots, status (`--success` / `--warning` / `--error`), UI (incl. `--shadow`) and type tokens, plus `@font-face` for Bricolage Grotesque, Instrument Sans and JetBrains Mono |
+| `@inixiative/config/theme/status.css` | the thread/work status layer (`--status-problem / attention / working / queued / done / idle / archived`) and the badge layer, for apps that show agent work |
+| `@inixiative/config/theme/domains.css` | four palettes on one structure, set with `data-domain="agentic \| building-blocks \| governance \| inixiative"` on any element; they nest |
+| `@inixiative/config/theme/marketing.css` | the marketing grammar: fluid type scale, spacing and section rhythm, container and gutter, radius, elevation and motion tokens (zeroed under `prefers-reduced-motion`), and the shared classes inside `.marketing` (`eyebrow` + `status-dot`, `button` / `button-secondary` / `text-link`, `nav`, `brand`, `section`, `card`, `card-grid`, `footer`, `prose`, all in `@layer components` so Tailwind utilities and unlayered page CSS override them) |
 | `@inixiative/config/theme/fonts/*` | the latin variable fonts `public.css` loads (SIL OFL 1.1, texts in `theme/fonts/LICENSES.md`) |
 
-Load `public.css`, then `agentic.css`, then the app's own CSS. Light is `:root`; dark is the `.dark` class on `<html>`. Values are HSL channels: `hsl(var(--app-primary))`, `hsl(var(--border) / .5)`. The fonts load from `./fonts/` relative to `public.css`, so serve the folder as it ships.
+Apps load `public.css`, then `status.css`, then their own CSS. Marketing pages load `public.css`, `domains.css`, then `marketing.css` (after template's `theme.css` where an app has it: `[data-domain]` ties `:root`/`.dark` on specificity, so load order decides), and put `class="marketing" data-domain="…"` on the page root. Light is `:root`; dark is the `.dark` class on `<html>`. Values are HSL channels: `hsl(var(--app-primary))`, `hsl(var(--border) / .5)`. The fonts load from `./fonts/` relative to `public.css`, so serve the folder as it ships. `demo/marketing.html` (not shipped) shows every domain, the type scale, buttons, sections and long-form prose; open it from a checkout.
+
+### Domain palettes
+
+Each palette fills the same four slots; marketing CSS reads the slots directly (`--app-primary`), because template's `--primary` is resolved once on `:root` and does not follow a nested `data-domain`. The primary is the page's one accent (CTA, eyebrow, wordmark stop). Tertiary and quaternary appear only where they mean something (agentic: blue = shared, pink = Signet). `inixiative` is neutral ink; its secondary, tertiary and quaternary are the agentic, building-blocks and governance primaries, so each door on the hub can wear its domain. Long-form reading (`.prose`) is set for the light theme.
+
+Contrast as text on the background (light `#f6f7f2`, dark ink `#0b1014`); the test holds every accent at 4.5:1 or more on the background and the card, and each accent's foreground on the accent.
+
+| Domain | Slot | Light | on `#f6f7f2` | Dark | on ink |
+| --- | --- | --- | --- | --- | --- |
+| agentic | primary | `#466713` | 6.08 | `#c8f77e` | 15.53 |
+| agentic | tertiary (shared) | `#1e69b8` | 5.18 | `#94c8ff` | 10.89 |
+| agentic | quaternary (Signet) | `#a33e84` | 5.45 | `#f1b7e2` | 11.48 |
+| building-blocks | primary (amber) | `#955104` | 5.64 | `#faba4c` | 11.10 |
+| building-blocks | tertiary (teal) | `#0c6d6e` | 5.69 | `#51d6cd` | 10.79 |
+| building-blocks | quaternary (brick) | `#ae3f29` | 5.51 | `#f9a18b` | 9.56 |
+| governance | primary (violet) | `#613bba` | 6.86 | `#c0a7fb` | 9.25 |
+| governance | tertiary (jade) | `#12684e` | 6.26 | `#66d6ad` | 10.73 |
+| governance | quaternary (rose) | `#a92d42` | 6.21 | `#fba7b8` | 10.31 |
+| inixiative | primary (ink) | `#0d1317` | 17.37 | `#eff2ed` | 16.93 |
 
 Apps load the theme from this package at runtime, so it is a runtime `dependency` of theirs. To keep that cheap this package has no runtime dependencies and every peer is optional; a test holds both.
 
