@@ -40,6 +40,7 @@ import {
   writeManifest,
 } from './lib';
 import { type Project, portsFor, projects } from './ports';
+import { checkRetiredTerms, writeRetiredTermsBaseline } from './retiredTerms';
 
 let commandLine: CommandLine;
 try {
@@ -48,7 +49,7 @@ try {
   if (!(error instanceof UsageError)) throw error;
   console.error(`✗ ${error.message}`);
   console.error(
-    'Usage: inixiative-config check [dir] [--preset=base|node|react]\n       inixiative-config sync [dir] [--preset=base|node|react] [--force] [--no-install]\n       inixiative-config scan [root] [--lane=primitives|agentic]\n       inixiative-config train [root] [--lane=primitives|agentic] [--push] [--dry-run]\n       inixiative-config ports [project]',
+    'Usage: inixiative-config check [dir] [--preset=base|node|react]\n       inixiative-config sync [dir] [--preset=base|node|react] [--force] [--no-install]\n       inixiative-config scan [root] [--lane=primitives|agentic]\n       inixiative-config train [root] [--lane=primitives|agentic] [--push] [--dry-run]\n       inixiative-config ports [project]\n       inixiative-config terms [dir] [--write-baseline]',
   );
   process.exit(2);
 }
@@ -140,7 +141,21 @@ const offDefaultBranch = (cwd: string): { branch: string; main: string } | null 
 
 if (command === 'check') {
   const { findings } = inspect(dir, manifest, presetFlag);
-  process.exit(report(findings) > 0 ? 1 : 0);
+  process.exit(report([...findings, ...checkRetiredTerms(dir).findings]) > 0 ? 1 : 0);
+}
+
+if (command === 'terms') {
+  if (commandLine.writeBaseline) {
+    const { written, refused } = writeRetiredTermsBaseline(dir);
+    if (refused.length > 0) {
+      console.error('✗ the baseline only shrinks; fix these uses (or allow a legitimate one):');
+      for (const entry of refused) console.error(`  ${entry}`);
+      process.exit(1);
+    }
+    console.log(`wrote ${written} baseline entr${written === 1 ? 'y' : 'ies'}`);
+    process.exit(0);
+  }
+  process.exit(report(checkRetiredTerms(dir).findings) > 0 ? 1 : 0);
 }
 
 const laneLabel = (checkout: Checkout): string =>
