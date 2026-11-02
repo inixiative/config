@@ -391,6 +391,78 @@ describe('two-phase blessing', () => {
   }, 30_000);
 });
 
+describe('holds', () => {
+  test('a held package publishes but is never recorded, applied or blessed until the hold lifts', () => {
+    const { train, bom, at, config, registry } = offlineTrain();
+    const commitBom = (next: Record<string, unknown>) => {
+      write(join(config, 'versions.json'), next);
+      run(config, realGit, 'add', 'versions.json');
+      run(
+        config,
+        realGit,
+        '-c',
+        'user.name=t',
+        '-c',
+        'user.email=t@t',
+        'commit',
+        '-q',
+        '-m',
+        'bom',
+      );
+    };
+    const hold = {
+      below: '0.19.0',
+      reason: 'breaking grants contract',
+      until: 'the Kingdom cutover',
+      owner: 'inixiative-bf',
+    };
+    commitBom({ ...bom(), holds: { '@inixiative/archive': hold } });
+    const adoptions = () => gitOut(at('foundry'), 'branch', '--list', 'train/*');
+
+    // Run 1: archive 0.19.0 is ahead of npm. It publishes, but the hold keeps it out of the BOM,
+    // so no repo moves onto it and config has nothing to release.
+    const first = train();
+    expect(first.status).toBe(0);
+    expect(readFileSync(join(registry, '@inixiative_archive'), 'utf8')).toContain('0.19.0');
+    expect(first.out).toContain(
+      '@inixiative/archive@0.19.0 published, held below 0.19.0 (breaking grants contract) — not recorded',
+    );
+    expect(first.out).toContain(
+      'held: @inixiative/archive below 0.19.0 — breaking grants contract (until the Kingdom cutover; owner inixiative-bf)',
+    );
+    expect(bom().candidates).toBeUndefined();
+    expect(bom().ecosystem['@inixiative/config']).toBe('1.0.0');
+    expect(adoptions()).toBe('');
+
+    // Run 2: 0.19.0 is on npm at archive's local version, neither blessed nor a candidate. A hold
+    // keeps it from being rediscovered.
+    const second = train();
+    expect(second.out).toContain(
+      '@inixiative/archive@0.19.0 on npm, held below 0.19.0 (breaking grants contract) — not recorded',
+    );
+    expect(bom().candidates).toBeUndefined();
+
+    // A held version already recorded as a candidate is neither applied nor blessed.
+    commitBom({ ...bom(), candidates: { '@inixiative/archive': '0.19.0' } });
+    const third = train();
+    expect(third.out).toContain('blessed: nothing');
+    expect(third.out).toContain(
+      'held: @inixiative/archive below 0.19.0 — breaking grants contract (until the Kingdom cutover; owner inixiative-bf); candidate 0.19.0 not applied',
+    );
+    expect(bom().agentic['@inixiative/archive']).toBe('0.18.0');
+    expect(bom().candidates).toEqual({ '@inixiative/archive': '0.19.0' });
+    expect(adoptions()).toBe('');
+
+    // Lifting is deleting the entry: the next train moves repos onto the candidate as usual.
+    const { holds: _lifted, ...lifted } = bom();
+    commitBom(lifted);
+    const fourth = train();
+    expect(fourth.out).not.toContain('held:');
+    expect(fourth.out).toContain('against the candidates — it adopts them on a branch');
+    expect(adoptions()).toContain('train/adopt-archive-0.19.0');
+  }, 90_000);
+});
+
 describe('parseCommandLine', () => {
   test('reads train flags', () => {
     expect(parseCommandLine(['train', '/root', '--lane=agentic', '--dry-run'])).toMatchObject({

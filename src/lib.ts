@@ -43,7 +43,16 @@ export type Manifest = {
    * them. `check` accepts any version from the blessed one up to the candidate.
    */
   candidates?: Record<string, string>;
+  /** Lane packages the train keeps below a version, keyed by package; absent when there are none. */
+  holds?: Record<string, Hold>;
 };
+
+/**
+ * Keeps every version of a package at or above `below` out of the ecosystem: the train still
+ * publishes it, but never records, applies or blesses it, and `check` never accepts it.
+ * Lifting the hold is deleting the entry.
+ */
+export type Hold = { below: string; reason: string; until?: string; owner?: string };
 
 export const isLane = (value: string): value is Lane =>
   (LANES as readonly string[]).includes(value);
@@ -70,12 +79,38 @@ export const blessedVersions = (manifest: Manifest): Record<string, string> => (
 export const laneOf = (manifest: Manifest, name: string): Lane | null =>
   LANES.find((lane) => name in lanePackages(manifest, lane)) ?? null;
 
+/** The hold that keeps `version` of `name` out of the ecosystem, or null when none does. */
+export const holdOf = (manifest: Manifest, name: string, version: string): Hold | null => {
+  const hold = manifest.holds?.[name];
+  return hold && compare(version, hold.below) >= 0 ? hold : null;
+};
+
+/** The candidates in play: every recorded candidate that no hold keeps out. */
+export const activeCandidates = (manifest: Manifest): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(manifest.candidates ?? {}).filter(
+      ([name, version]) => !holdOf(manifest, name, version),
+    ),
+  );
+
+/** One line per hold, for the train's summary and scan: what is held, why, and until when. */
+export const holdLines = (manifest: Manifest): string[] =>
+  Object.entries(manifest.holds ?? {}).map(([name, hold]) => {
+    const terms = [hold.until && `until ${hold.until}`, hold.owner && `owner ${hold.owner}`]
+      .filter(Boolean)
+      .join('; ');
+    const candidate = manifest.candidates?.[name];
+    const parked =
+      candidate && holdOf(manifest, name, candidate) ? `; candidate ${candidate} not applied` : '';
+    return `held: ${name} below ${hold.below} — ${hold.reason}${terms ? ` (${terms})` : ''}${parked}`;
+  });
+
 /**
- * The set the train moves repos onto: the blessed sets with each candidate in its place. It
- * keeps `candidates`, so findings name a candidate as one.
+ * The set the train moves repos onto: the blessed sets with each candidate in play in its place.
+ * It keeps `candidates`, so findings name a candidate as one.
  */
 export const adoptionTarget = (manifest: Manifest): Manifest => {
-  const candidates = manifest.candidates ?? {};
+  const candidates = activeCandidates(manifest);
   const overlay = (section: Record<string, string>) =>
     Object.fromEntries(
       Object.entries(section).map(([name, version]) => [name, candidates[name] ?? version]),
@@ -87,13 +122,16 @@ export const adoptionTarget = (manifest: Manifest): Manifest => {
   };
 };
 
-/** Bless the named candidates: each moves into its lane's section and leaves `candidates`. */
+/**
+ * Bless the named candidates: each moves into its lane's section and leaves `candidates`. A held
+ * candidate is never blessed and stays where it is.
+ */
 export const promoteCandidates = (manifest: Manifest, names: string[]): string[] => {
   const promoted: string[] = [];
   for (const name of names) {
     const version = manifest.candidates?.[name];
     const lane = laneOf(manifest, name);
-    if (!version || !lane || !manifest.candidates) continue;
+    if (!version || !lane || !manifest.candidates || holdOf(manifest, name, version)) continue;
     laneSection(manifest, lane)[name] = version;
     delete manifest.candidates[name];
     promoted.push(`${name}@${version}`);
@@ -1014,7 +1052,7 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
   }
 
   const blessedSet = blessedVersions(manifest);
-  const candidateSet = manifest.candidates ?? {};
+  const candidateSet = activeCandidates(manifest);
   const staleKeys = new Set<string>();
   for (const target of rangeTargets) {
     for (const field of DEP_FIELDS) {

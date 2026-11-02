@@ -3,11 +3,13 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
+  activeCandidates,
   adoptionTarget,
   blessedVersions,
   compare,
   consumersFor,
   discover,
+  holdOf,
   inspect,
   LANES,
   lanePackages,
@@ -151,6 +153,16 @@ describe('the BOM', () => {
     for (const [name, version] of Object.entries(manifest.candidates ?? {})) {
       expect(LANES.some((lane) => name in lanePackages(manifest, lane))).toBe(true);
       expect(compare(version, all[name])).toBeGreaterThan(0);
+    }
+  });
+
+  test('every hold names a lane package, says why, and sits above its blessed version', () => {
+    const all = blessedVersions(manifest);
+    for (const [name, hold] of Object.entries(manifest.holds ?? {})) {
+      expect(LANES.some((lane) => name in lanePackages(manifest, lane))).toBe(true);
+      expect(hold.below).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(hold.reason.length).toBeGreaterThan(0);
+      expect(compare(hold.below, all[name])).toBeGreaterThan(0);
     }
   });
 
@@ -501,5 +513,78 @@ describe('candidates', () => {
     expect(manifest.agentic?.['@inixiative/archive']).toBe('0.3.0');
     expect(manifest.candidates).toBeUndefined();
     expect(promoteCandidates(withCandidate(), [])).toEqual([]);
+  });
+});
+
+describe('holds', () => {
+  const held = (candidate: string): Manifest => ({
+    ...bom(),
+    candidates: { '@inixiative/archive': candidate, '@inixiative/foundry': '0.2.0' },
+    holds: {
+      '@inixiative/archive': { below: '0.3.0', reason: 'breaking contract', until: 'cutover' },
+    },
+  });
+  const app = (range: string, locked: string) => {
+    const dir = mkdtempSync(join(tmpdir(), 'inixiative-hold-'));
+    write(join(dir, 'package.json'), {
+      name: 'app',
+      private: true,
+      dependencies: { '@inixiative/archive': range },
+    });
+    write(
+      join(dir, 'bun.lock'),
+      JSON.stringify({
+        packages: { '@inixiative/archive': [`@inixiative/archive@${locked}`, '', {}, 'sha'] },
+      }),
+    );
+    return dir;
+  };
+  const archiveFindings = (dir: string, manifest: Manifest) =>
+    inspect(dir, manifest)
+      .findings.filter((finding) => finding.target === '@inixiative/archive')
+      .map((finding) => finding.message);
+
+  test('a hold covers its version and everything above, never below', () => {
+    const manifest = held('0.3.0');
+    expect(holdOf(manifest, '@inixiative/archive', '0.3.0')?.reason).toBe('breaking contract');
+    expect(holdOf(manifest, '@inixiative/archive', '0.4.1')?.below).toBe('0.3.0');
+    expect(holdOf(manifest, '@inixiative/archive', '0.2.9')).toBeNull();
+    expect(holdOf(manifest, '@inixiative/foundry', '9.0.0')).toBeNull();
+  });
+
+  test('a held candidate is out of play; one below the hold and other packages are not', () => {
+    expect(activeCandidates(held('0.3.0'))).toEqual({ '@inixiative/foundry': '0.2.0' });
+    expect(activeCandidates(held('0.2.5'))).toEqual({
+      '@inixiative/archive': '0.2.5',
+      '@inixiative/foundry': '0.2.0',
+    });
+  });
+
+  test('check accepts only the blessed version of a held package, ignoring the held candidate', () => {
+    expect(archiveFindings(app('^0.2.1', '0.2.1'), held('0.3.0'))).toEqual([]);
+    expect(archiveFindings(app('^0.3.0', '0.3.0'), held('0.3.0'))).toEqual([
+      '@inixiative/archive dependencies range ^0.3.0 does not admit blessed 0.2.1 → ^0.2.1',
+      '@inixiative/archive locked at 0.3.0, blessed is 0.2.1 → re-lock',
+    ]);
+  });
+
+  test('a candidate below the hold is still accepted', () => {
+    expect(archiveFindings(app('^0.2.1', '0.2.5'), held('0.2.5'))).toEqual([]);
+  });
+
+  test('the train never moves repos onto a held candidate', () => {
+    const target = adoptionTarget(held('0.3.0'));
+    expect(target.agentic?.['@inixiative/archive']).toBe('0.2.1');
+    expect(target.agentic?.['@inixiative/foundry']).toBe('0.2.0');
+    expect(archiveFindings(app('^0.2.1', '0.2.1'), target)).toEqual([]);
+  });
+
+  test('a held candidate is never blessed, and stays recorded as it was', () => {
+    const manifest = held('0.3.0');
+    expect(promoteCandidates(manifest, ['@inixiative/archive', '@inixiative/foundry'])).toEqual([
+      '@inixiative/foundry@0.2.0',
+    ]);
+    expect(manifest.agentic?.['@inixiative/archive']).toBe('0.2.1');
+    expect(manifest.candidates).toEqual({ '@inixiative/archive': '0.3.0' });
   });
 });

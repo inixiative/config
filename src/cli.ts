@@ -13,12 +13,15 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { type CommandLine, parseCommandLine, UsageError } from './args';
 import {
   acquireTrainLock,
+  activeCandidates,
   adoptionTarget,
   blessedVersions,
   type Checkout,
   compare,
   declaredDependencies,
   type Finding,
+  holdLines,
+  holdOf,
   holdTrainLock,
   inspect,
   isConfigCheckout,
@@ -155,9 +158,10 @@ if (command === 'scan') {
   const missing = [...plan.lanes.flatMap((lane) => lane.missing), ...plan.missingConsumers];
   const ambiguous = [...plan.lanes.flatMap((lane) => lane.ambiguous), ...plan.ambiguousConsumers];
   const drifted: string[] = [];
-  for (const [name, version] of Object.entries(manifest.candidates ?? {})) {
+  for (const [name, version] of Object.entries(activeCandidates(manifest))) {
     console.log(`candidate: ${name}@${version} (blessed ${blessedVersions(manifest)[name]})`);
   }
+  for (const line of holdLines(manifest)) console.log(line);
   for (const checkout of checkouts) {
     console.log(`\n${checkout.name} — ${checkout.dir} (${laneLabel(checkout)})`);
     const off = offDefaultBranch(checkout.dir);
@@ -412,7 +416,7 @@ if (command === 'train') {
 
   /** The candidates a checkout's ranges or lockfile would move onto. */
   const movesOf = (checkout: Checkout): string[] => {
-    const candidates = manifest.candidates ?? {};
+    const candidates = activeCandidates(manifest);
     const names = inspect(checkout.dir, target()).findings.flatMap((finding) =>
       (finding.kind === 'ecosystem-range' || finding.kind === 'stale-lock') &&
       finding.target &&
@@ -753,16 +757,25 @@ if (command === 'train') {
         followers.push({ checkout, onBranch: false });
 
         for (const { entry, local, remote, ahead } of releases) {
-          if (ahead) {
-            publish(checkout, entry, local, remote);
-          } else if (section[entry.name] === local) {
+          if (ahead) publish(checkout, entry, local, remote);
+          // A held version ships to npm, but the ecosystem never hears of it.
+          const hold = holdOf(manifest, entry.name, local);
+          if (hold) {
+            console.log(
+              `⏸ ${entry.name}@${local} ${ahead ? 'published' : 'on npm'}, held below ${hold.below} (${hold.reason}) — not recorded`,
+            );
+            continue;
+          }
+          if (!ahead && section[entry.name] === local) {
             console.log(`✓ ${entry.name}@${local} already on npm and blessed`);
             continue;
-          } else if (manifest.candidates?.[entry.name] === local) {
+          }
+          if (!ahead && manifest.candidates?.[entry.name] === local) {
             console.log(`✓ ${entry.name}@${local} already on npm and a candidate`);
             continue;
-          } else {
-            // Published outside the train, or by a train whose lane later failed.
+          }
+          // Published outside the train, or by a train whose lane later failed.
+          if (!ahead) {
             console.log(`✓ ${entry.name}@${local} already on npm — recording it as a candidate`);
           }
           manifest.candidates = { ...manifest.candidates, [entry.name]: local };
@@ -833,7 +846,7 @@ if (command === 'train') {
   // Every repo of every lane that this run did not walk to an outcome — another lane, a lane
   // that stopped, a skipped or failed checkout, a consumer without a checkout — is unverified,
   // and holds back each candidate it declares (for a missing consumer, its lanes' candidates).
-  const candidateNames = Object.keys(manifest.candidates ?? {});
+  const candidateNames = Object.keys(activeCandidates(manifest));
   if (candidateNames.length > 0) {
     const everything = trainPlan(dir, manifest, LANES);
     for (const checkout of [
@@ -883,7 +896,7 @@ if (command === 'train') {
     unverified: 'not verified this run',
   };
   console.log(`\nblessed: ${promoted.length === 0 ? 'nothing' : promoted.join(', ')}`);
-  const candidates = Object.entries(manifest.candidates ?? {});
+  const candidates = Object.entries(activeCandidates(manifest));
   if (candidates.length > 0) {
     console.log('candidates (check accepts them; not yet blessed):');
     for (const [name, version] of candidates) {
@@ -893,6 +906,7 @@ if (command === 'train') {
       console.log(`  ${name}@${version}${on.length === 0 ? '' : ` — waiting on ${on.join(', ')}`}`);
     }
   }
+  for (const line of holdLines(manifest)) console.log(line);
   if (waiting.length > 0) {
     console.log('pending (merge each adoption PR, then run the train again to bless):');
     for (const entry of waiting) {

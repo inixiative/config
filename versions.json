@@ -13,7 +13,7 @@
     "@types/bun"
   ],
   "ecosystem": {
-    "@inixiative/config": "0.5.175",
+    "@inixiative/config": "0.5.176",
     "@inixiative/json-rules": "3.16.0",
     "@inixiative/permissions": "0.18.0",
     "@inixiative/transitions": "0.6.0",
@@ -53,6 +53,14 @@
     "@inixiative/agent-session": "0.8.0",
     "@inixiative/archive": "0.31.0",
     "@inixiative/atlas": "0.5.0",
-    "@inixiative/signet": "0.12.0"
+    "@inixiative/signet": "0.11.1"
+  },
+  "holds": {
+    "@inixiative/signet": {
+      "below": "0.12.0",
+      "reason": "0.12 breaks the grants contract that prod Kingdom (0.11) speaks",
+      "until": "the Kingdom grants cutover",
+      "owner": "inixiative-bf"
+    }
   }
 }
