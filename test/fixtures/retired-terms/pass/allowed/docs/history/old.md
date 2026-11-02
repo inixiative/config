@@ -1,1 +1,1 @@
-The old connectionId field.
+The old RuntimeInstallation table.

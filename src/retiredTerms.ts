@@ -23,8 +23,8 @@ import type { Finding } from './lib';
  * Deliberately absent, each because a pattern would flag mostly legitimate text:
  * - "medical" / "healthcare": the doctor's-visit story is allowed in marketing (CLAUDE.md
  *   2026-10-12); only the dead demo's identifiers are listed.
- * - "Connection" as a word: WebSocket and database connections are everywhere; only the dead
- *   model's field name `connectionId` is listed.
+ * - "Connection" and `connectionId`: WebSocket and database connections are everywhere, and
+ *   Foundry's viewer has a live per-socket `connectionId`.
  * - "principal": the permissions README uses it as the glossary word for any holder, beside
  *   job titles ("principal engineer") and the principal–agent problem in governance prose.
  * - "Cursor as a runtime", "token savings": a phrase can't tell a claim from a comparison.
@@ -48,12 +48,6 @@ export const RETIRED_TERMS: readonly RetiredTerm[] = [
     pattern: /\bCastles?\b/g,
     scope: 'docs',
     instead: 'Kingdom, owner, integration or Signet',
-  },
-  {
-    id: 'connection-id',
-    pattern: /\bconnectionIds?\b/g,
-    scope: 'docs',
-    instead: 'integrationId (Connection was folded into Integration)',
   },
   {
     id: 'runtime-keys',
@@ -99,9 +93,10 @@ const BASELINE_FILE = `${RETIRED_TERMS_DIR}/baseline.txt`;
 
 const TEXT_FILE = /\.(md|mdx|html|astro)$/i;
 const PUBLIC_FILE = /(^|\/)README[^/]*\.md$|\.(html|astro|mdx)$/i;
-// Test data and history: fixtures hold the words on purpose, and a changelog records the rename.
+// Skipped: dependencies and build output at the root; fixtures (they hold the words on purpose);
+// changelogs (history records the rename); generated Warden regions (fix their source docs).
 const SKIPPED =
-  /(^|\/)(node_modules|\.git|\.worktrees|dist|build|coverage|tmp|fixtures|rule-violations)\/|(^|\/)CHANGELOG[^/]*\.md$/i;
+  /(^|\/)(node_modules|\.git|\.worktrees|fixtures|rule-violations)\/|^(dist|build|coverage|tmp)\/|^\.foundry\/regions\/|(^|\/)CHANGELOG[^/]*\.md$/i;
 
 export type RetiredTermHit = { path: string; line: number; term: RetiredTerm; text: string };
 
@@ -216,13 +211,19 @@ const countByKey = (hits: RetiredTermHit[]): Map<string, number> => {
   return counts;
 };
 
-const readBaseline = (root: string): Map<string, number> =>
-  new Map(
-    readList(root, BASELINE_FILE).map((line) => {
-      const [path, term, count] = line.split('\t');
-      return [`${path}\t${term}`, Number(count)] as const;
-    }),
-  );
+const BASELINE_LINE = /^([^\t]+)\t([^\t]+)\t(\d+)$/;
+
+/** Entries by `<path>\t<term>`, and any line that isn't `<path>\t<term>\t<count>`. */
+const readBaseline = (root: string): { counts: Map<string, number>; malformed: string[] } => {
+  const counts = new Map<string, number>();
+  const malformed: string[] = [];
+  for (const line of readList(root, BASELINE_FILE)) {
+    const match = BASELINE_LINE.exec(line);
+    if (match) counts.set(`${match[1]}\t${match[2]}`, Number(match[3]));
+    else malformed.push(line);
+  }
+  return { counts, malformed };
+};
 
 export type RetiredTermsResult = {
   findings: Finding[];
@@ -238,8 +239,11 @@ export const checkRetiredTerms = (root: string): RetiredTermsResult => {
   const allowed = allowedBy(readList(root, ALLOW_FILE));
   const hits = scanRetiredTerms(root).filter((hit) => !allowed(hit));
   const counts = countByKey(hits);
-  const baseline = readBaseline(root);
-  const findings: Finding[] = [];
+  const { counts: baseline, malformed } = readBaseline(root);
+  const findings: Finding[] = malformed.map((line) => ({
+    level: 'error',
+    message: `${BASELINE_FILE}: "${line}" is not <path>\\t<term>\\t<count> → rewrite it with terms --write-baseline`,
+  }));
 
   for (const [key, count] of counts) {
     const known = baseline.get(key) ?? 0;
@@ -286,7 +290,7 @@ export const writeRetiredTermsBaseline = (root: string): { written: number; refu
   const counts = countByKey(scanRetiredTerms(root).filter((hit) => !allowed(hit)));
   const path = join(root, BASELINE_FILE);
   if (existsSync(path)) {
-    const baseline = readBaseline(root);
+    const { counts: baseline } = readBaseline(root);
     const refused = [...counts]
       .filter(([key, count]) => count > (baseline.get(key) ?? 0))
       .map(

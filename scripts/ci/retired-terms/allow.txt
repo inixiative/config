@@ -4,7 +4,6 @@
 # README.md documents the retired-terms rule, so it names every term.
 README.md	kastle
 README.md	castle
-README.md	connection-id
 README.md	runtime-keys
 README.md	medical-demo
 README.md	retired-workspaces

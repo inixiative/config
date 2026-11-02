@@ -24,7 +24,7 @@ const errors = (fixture: string) =>
     .map((finding) => finding.message);
 
 describe('retired terms: pass', () => {
-  test('clean copy passes: connections, the medical story, principal, castle icons, a changelog', () => {
+  test('clean copy passes: connections, the medical story, principal, castle icons, a changelog, generated regions', () => {
     expect(checkRetiredTerms(join(fixtures, 'pass/clean')).findings).toEqual([]);
   });
 
@@ -67,6 +67,12 @@ describe('retired terms: fail', () => {
     expect(errors('fail/stale-baseline')).toEqual([
       `${RETIRED_TERMS_DIR}/baseline.txt: README.md uses foundry-roles 1× now, not 2 → lower its count`,
       `${RETIRED_TERMS_DIR}/baseline.txt: docs/gone.md no longer uses kastle → delete its line`,
+    ]);
+  });
+
+  test('a baseline line without a count fails instead of reading as NaN', () => {
+    expect(errors('fail/malformed-baseline')).toEqual([
+      expect.stringContaining('"README.md\tkastle" is not'),
     ]);
   });
 
