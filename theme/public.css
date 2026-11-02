@@ -6,7 +6,7 @@
  * Values are HSL channels, used as hsl(var(--x)) or hsl(var(--x) / .12).
  * Light is the default (:root); dark is the `.dark` class on <html>, as in template and Kingdom.
  * Colour meaning: lime = yours / live (--app-primary), blue = shared (--app-tertiary), pink = Signet (--app-quaternary).
- * Thread and work status colours are a separate layer: theme/agentic.css.
+ * Thread and work status colours are a separate layer: theme/status.css. Domain palettes: theme/domains.css; marketing grammar: theme/marketing.css.
  */
 
 @font-face {
@@ -67,6 +67,7 @@
   --border: 87 12% 86%;
   --input: 87 12% 82%;
   --ring: 84 69% 30%;
+  --shadow: 206 29% 7%; /* elevation: hsl(var(--shadow) / .3) */
   --radius: 0.75rem;
 
   /* Type */
@@ -109,4 +110,5 @@
   --border: 202 22% 15%;
   --input: 204 22% 19%;
   --ring: 83 88% 73%;
+  --shadow: 206 40% 2%;
 }

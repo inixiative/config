@@ -1,0 +1,137 @@
+/*
+ * @inixiative/config/theme/domains.css — one structure, four palettes (Aron, 2026-11-02).
+ *
+ * Load after theme/public.css. A palette is the four --app-* slots (primary, secondary, tertiary,
+ * quaternary, each with its foreground) plus --ring, set on any element with `data-domain`:
+ *   agentic          Kingdom, Foundry, Archive, Oracle: lime = yours, blue = shared, pink = Signet (public.css's own values)
+ *   building-blocks  the primitives (json-rules, permissions, transitions, …): amber, teal, brick
+ *   governance       the whitepaper and proposals: violet, jade, rose
+ *   inixiative       the org: neutral ink; secondary/tertiary/quaternary are the three domain primaries
+ * Why an attribute and not one file per palette: palettes nest. The hub is `inixiative` and each door
+ * inside it wears its own domain (`<a data-domain="governance">`); a file per palette can't do that.
+ * Why raw tokens per mode and plain mappings: the `[data-domain]` rules hold no colour, so they work in
+ * light and dark alike and at any depth. Read slots directly (hsl(var(--app-primary))): template's
+ * --primary is resolved once on :root and does not follow a nested data-domain.
+ * Every primary, tertiary and quaternary is AA (4.5:1) as text on its mode's background and card;
+ * the ratios are in the README.
+ */
+
+:root {
+  --agentic-primary: 84 69% 24%;
+  --agentic-primary-foreground: 70 25% 97%;
+  --agentic-secondary: 80 14% 91%;
+  --agentic-secondary-foreground: 206 29% 10%;
+  --agentic-tertiary: 211 72% 42%;
+  --agentic-tertiary-foreground: 0 0% 100%;
+  --agentic-quaternary: 318 45% 44%;
+  --agentic-quaternary-foreground: 0 0% 100%;
+  --agentic-ring: 84 69% 30%;
+
+  --building-blocks-primary: 32 95% 30%;
+  --building-blocks-primary-foreground: 70 25% 97%;
+  --building-blocks-secondary: 36 20% 91%;
+  --building-blocks-secondary-foreground: 206 29% 10%;
+  --building-blocks-tertiary: 181 80% 24%;
+  --building-blocks-tertiary-foreground: 0 0% 100%;
+  --building-blocks-quaternary: 10 62% 42%;
+  --building-blocks-quaternary-foreground: 0 0% 100%;
+  --building-blocks-ring: 32 95% 30%;
+
+  --governance-primary: 258 52% 48%;
+  --governance-primary-foreground: 0 0% 100%;
+  --governance-secondary: 255 18% 92%;
+  --governance-secondary-foreground: 206 29% 10%;
+  --governance-tertiary: 162 70% 24%;
+  --governance-tertiary-foreground: 0 0% 100%;
+  --governance-quaternary: 350 58% 42%;
+  --governance-quaternary-foreground: 0 0% 100%;
+  --governance-ring: 258 52% 48%;
+
+  --inixiative-primary: 206 29% 7%;
+  --inixiative-primary-foreground: 70 25% 97%;
+  --inixiative-ring: 206 29% 7%;
+}
+
+.dark {
+  --agentic-primary: 83 88% 73%;
+  --agentic-primary-foreground: 206 29% 6%;
+  --agentic-secondary: 204 25% 12%;
+  --agentic-secondary-foreground: 96 17% 94%;
+  --agentic-tertiary: 211 100% 79%;
+  --agentic-tertiary-foreground: 206 29% 6%;
+  --agentic-quaternary: 315 67% 83%;
+  --agentic-quaternary-foreground: 206 29% 6%;
+  --agentic-ring: 83 88% 73%;
+
+  --building-blocks-primary: 38 95% 64%;
+  --building-blocks-primary-foreground: 206 29% 6%;
+  --building-blocks-secondary: 30 16% 12%;
+  --building-blocks-secondary-foreground: 96 17% 94%;
+  --building-blocks-tertiary: 176 62% 58%;
+  --building-blocks-tertiary-foreground: 206 29% 6%;
+  --building-blocks-quaternary: 12 90% 76%;
+  --building-blocks-quaternary-foreground: 206 29% 6%;
+  --building-blocks-ring: 38 95% 64%;
+
+  --governance-primary: 258 92% 82%;
+  --governance-primary-foreground: 206 29% 6%;
+  --governance-secondary: 250 18% 13%;
+  --governance-secondary-foreground: 96 17% 94%;
+  --governance-tertiary: 158 58% 62%;
+  --governance-tertiary-foreground: 206 29% 6%;
+  --governance-quaternary: 348 92% 82%;
+  --governance-quaternary-foreground: 206 29% 6%;
+  --governance-ring: 258 92% 82%;
+
+  --inixiative-primary: 96 17% 94%;
+  --inixiative-primary-foreground: 206 29% 6%;
+  --inixiative-ring: 96 17% 94%;
+}
+
+[data-domain="agentic"] {
+  --app-primary: var(--agentic-primary);
+  --app-primary-foreground: var(--agentic-primary-foreground);
+  --app-secondary: var(--agentic-secondary);
+  --app-secondary-foreground: var(--agentic-secondary-foreground);
+  --app-tertiary: var(--agentic-tertiary);
+  --app-tertiary-foreground: var(--agentic-tertiary-foreground);
+  --app-quaternary: var(--agentic-quaternary);
+  --app-quaternary-foreground: var(--agentic-quaternary-foreground);
+  --ring: var(--agentic-ring);
+}
+
+[data-domain="building-blocks"] {
+  --app-primary: var(--building-blocks-primary);
+  --app-primary-foreground: var(--building-blocks-primary-foreground);
+  --app-secondary: var(--building-blocks-secondary);
+  --app-secondary-foreground: var(--building-blocks-secondary-foreground);
+  --app-tertiary: var(--building-blocks-tertiary);
+  --app-tertiary-foreground: var(--building-blocks-tertiary-foreground);
+  --app-quaternary: var(--building-blocks-quaternary);
+  --app-quaternary-foreground: var(--building-blocks-quaternary-foreground);
+  --ring: var(--building-blocks-ring);
+}
+
+[data-domain="governance"] {
+  --app-primary: var(--governance-primary);
+  --app-primary-foreground: var(--governance-primary-foreground);
+  --app-secondary: var(--governance-secondary);
+  --app-secondary-foreground: var(--governance-secondary-foreground);
+  --app-tertiary: var(--governance-tertiary);
+  --app-tertiary-foreground: var(--governance-tertiary-foreground);
+  --app-quaternary: var(--governance-quaternary);
+  --app-quaternary-foreground: var(--governance-quaternary-foreground);
+  --ring: var(--governance-ring);
+}
+
+[data-domain="inixiative"] {
+  --app-primary: var(--inixiative-primary);
+  --app-primary-foreground: var(--inixiative-primary-foreground);
+  --app-secondary: var(--agentic-primary);
+  --app-secondary-foreground: var(--agentic-primary-foreground);
+  --app-tertiary: var(--building-blocks-primary);
+  --app-tertiary-foreground: var(--building-blocks-primary-foreground);
+  --app-quaternary: var(--governance-primary);
+  --app-quaternary-foreground: var(--governance-primary-foreground);
+  --ring: var(--inixiative-ring);
+}
