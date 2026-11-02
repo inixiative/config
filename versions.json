@@ -24,6 +24,7 @@
   },
   "agentic": {
     "@inixiative/signet": "0.9.0",
+    "@inixiative/kcp": "0.1.0",
     "@inixiative/archive": "0.28.0",
     "@inixiative/agent-session": "0.6.8",
     "@inixiative/foundry-core": "0.5.9",

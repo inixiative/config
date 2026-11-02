@@ -54,6 +54,11 @@ const agenticRoot = (): string => {
     ...extra,
   });
   repo(join(root, 'signet'), { 'package.json': pkg('@inixiative/signet') });
+  repo(join(root, 'kcp'), {
+    'package.json': pkg('@inixiative/kcp', {
+      dependencies: { '@inixiative/signet': `^${next('@inixiative/signet')}` },
+    }),
+  });
   repo(join(root, 'archive'), { 'package.json': pkg('@inixiative/archive') });
   repo(join(root, 'agent-session'), { 'package.json': pkg('@inixiative/agent-session') });
   repo(join(root, 'foundry'), {
@@ -134,7 +139,7 @@ const snapshot = (dirs: string[]) =>
 describe('train --dry-run', () => {
   test('plans the release without installing, writing, committing, publishing or pushing', () => {
     const root = agenticRoot();
-    const repos = ['signet', 'archive', 'agent-session', 'foundry', 'kingdom', 'oracle'].map(
+    const repos = ['signet', 'kcp', 'archive', 'agent-session', 'foundry', 'kingdom', 'oracle'].map(
       (name) => join(root, name),
     );
     const own = ['versions.json', 'package.json'].map((file) => join(packageRoot, file));
@@ -145,6 +150,7 @@ describe('train --dry-run', () => {
 
     expect(out).toContain('dry run: nothing is installed, written, committed, published or pushed');
     expect(out).toContain(`would publish @inixiative/signet@`);
+    expect(out).toContain(`would publish @inixiative/kcp@`);
     expect(out).toContain(`would publish @inixiative/foundry@`);
     expect(out).toContain('would re-lock kingdom and run its check');
     expect(out).toContain('would create review branch train/adopt-signet-');

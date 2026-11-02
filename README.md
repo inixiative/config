@@ -68,7 +68,7 @@ One version of `@inixiative/config` names one coherent ecosystem state:
 }
 ```
 
-A lane is a release cascade with its own blessed set. `primitives` (json-rules, permissions, transitions, rules-builder, prisma-map, atlas, gloss) ships first; `agentic` (signet → archive, agent-session → foundry-core → foundry → foundry-acp) builds on the primitives' blessed set and never the reverse. `check` holds every repo to the union of all lanes, so a repo that mixes both answers to both.
+A lane is a release cascade with its own blessed set. `primitives` (json-rules, permissions, transitions, rules-builder, prisma-map, atlas, gloss) ships first; `agentic` (signet → archive, signet → kcp, agent-session → foundry-core → foundry → foundry-acp) builds on the primitives' blessed set and never the reverse. `check` holds every repo to the union of all lanes, so a repo that mixes both answers to both.
 
 TypeScript 6.0 notes, discovered by this repo's fixture suite:
 
@@ -161,6 +161,6 @@ jobs:
 Two lanes, each publishing in dependency order, with config last:
 
 - **primitives** — for example json-rules → permissions → transitions → rules-builder, plus prisma-map, atlas and gloss. Consumers: template, kingdom.
-- **agentic** — archive and agent-session, then foundry-core → foundry (foundry depends on archive), built on the primitives' blessed set. foundry-core and foundry publish from the foundry monorepo's `packages/core` and `packages/foundry`. Consumers: oracle (a private leaf), kingdom.
+- **agentic** — signet, kcp (the Kingdom CLI proxy, on signet), archive and agent-session, then foundry-core → foundry (foundry depends on archive), built on the primitives' blessed set. foundry-core and foundry publish from the foundry monorepo's `packages/core` and `packages/foundry`. Consumers: oracle (a private leaf), kingdom.
 
 A release is `train` (or `train --lane=agentic` to leave the primitives alone): bump the package's version on its default branch, then run the train. `train` automates the whole walk, this package and the consumer PRs included. Downstream repos pick up toolchain changes via `sync`.
