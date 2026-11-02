@@ -170,10 +170,19 @@ describe('marketing grammar', () => {
     const reduced = marketingCss.split('prefers-reduced-motion')[1] ?? '';
     for (const name of durations.filter((name) => name !== '--duration-live'))
       expect(reduced).toContain(`${name}: 0ms`);
+    expect(reduced).toContain('--lift: 0px');
     expect(reduced).toContain('animation: none');
   });
 
-  test('shared classes sit inside .marketing at the lowest specificity', () => {
+  test('shared classes sit in @layer components, every selector scoped to :where(.marketing)', () => {
+    const layered = marketingCss.split('@layer components {')[1] ?? '';
+    expect(layered).not.toBe('');
+    const selectors = [...layered.matchAll(/([^{};]+)\{/g)]
+      .map((m) => (m[1] ?? '').trim())
+      .filter((sel) => sel && !sel.startsWith('@') && !/^\d+%$/.test(sel));
+    for (const list of selectors)
+      for (const selector of list.split(/,(?![^(]*\))/).map((part) => part.trim()))
+        expect(selector).toMatch(/^:where\((\.marketing|\.dark \.marketing)/);
     for (const cls of [
       'eyebrow',
       'button',
@@ -184,7 +193,7 @@ describe('marketing grammar', () => {
       'card',
       'prose',
     ])
-      expect(marketingCss).toContain(`:where(.marketing) .${cls}`);
+      expect(layered).toContain(`:where(.marketing) .${cls}`);
   });
 
   test('no token shadows a Tailwind theme name', () => {
