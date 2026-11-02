@@ -1,7 +1,7 @@
 import { type ParseArgsConfig, parseArgs } from 'node:util';
 import { isLane, type Lane, type Preset } from './lib';
 
-export const COMMANDS = ['check', 'sync', 'scan', 'train', 'ports'] as const;
+export const COMMANDS = ['check', 'sync', 'scan', 'train', 'ports', 'terms'] as const;
 export type Command = (typeof COMMANDS)[number];
 
 const PRESETS: readonly Preset[] = ['base', 'node', 'react'];
@@ -17,6 +17,7 @@ const OPTIONS = {
   scan: { lane },
   train: { lane, push: flag, 'dry-run': flag },
   ports: {},
+  terms: { 'write-baseline': flag },
 } as const;
 
 export type CommandLine = {
@@ -28,6 +29,7 @@ export type CommandLine = {
   noInstall: boolean;
   push: boolean;
   dryRun: boolean;
+  writeBaseline: boolean;
 };
 
 export class UsageError extends Error {}
@@ -79,5 +81,6 @@ export const parseCommandLine = (argv: string[]): CommandLine => {
     noInstall: values['no-install'] === true,
     push: values.push === true,
     dryRun: values['dry-run'] === true,
+    writeBaseline: values['write-baseline'] === true,
   };
 };

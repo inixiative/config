@@ -1,0 +1,13 @@
+# Legitimate uses of retired terms (@inixiative/config check). <term> allows it everywhere;
+# <path>	<term> in one file, or under a directory when the path ends in /. Stale copy never goes here.
+
+# README.md documents the retired-terms rule, so it names every term.
+README.md	kastle
+README.md	castle
+README.md	connection-id
+README.md	runtime-keys
+README.md	medical-demo
+README.md	retired-workspaces
+README.md	foundry-oracle
+README.md	own-llm-keys
+README.md	foundry-roles

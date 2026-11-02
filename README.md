@@ -71,11 +71,32 @@ bunx @inixiative/config sync  [dir] [--preset=...] [--force] [--no-install]
 bunx @inixiative/config scan  [root] [--lane=primitives|agentic]
 bunx @inixiative/config train [root] [--lane=primitives|agentic] [--push] [--dry-run]
 bunx @inixiative/config ports [project]
+bunx @inixiative/config terms [dir] [--write-baseline]
 ```
 
 `ports` prints each project's local ports from `ports.json` (also exported as `@inixiative/config/ports.json`). A project's port for a service is the service's usual default plus 100 times the project's block, so no two projects collide. Zealot alone sits at block 0, the defaults (Aron, 2026-10-20: it already runs there); every other project is off the defaults: Archive (block 7) serves HTTP on 4700 with Postgres on 6132; Kingdom (block 2) has web 3200, API 8200, Postgres 5632, Redis 6579. Reserved ports (macOS AirPlay on 5000 and 7000) are never assigned. Give a new project the next free block (never 0), and a new kind of service its usual default; the tests fail on any collision.
 
 `check` is read-only and exits non-zero on drift — run it in CI after a frozen-lockfile install. It verifies toolchain pins — declared once, at the root, pinned exactly: a workspace member declaring one is an error, and `bun.lock` must resolve each only to its pin (no second copy) — toolchain peer ranges (they must admit the pin and no older major; `sync` writes `>=<pin major>.<pin minor>.0`), `"latest"` ranges, `packageManager`/`.bun-version`, legacy `bun.lockb`, a committed (tracked, un-ignored) `bun.lock`, a gitignored `tmp/` (scratch space; `sync` adds `/tmp/*`, which keeps re-included files tracked), required scripts (`check`/`typecheck`/`lint`/`test`), lefthook (dep + `lefthook.yml` extending the shared hooks + `prepare` script; git repos only), stub `extends`, presence of this package, and for every ecosystem dependency — in the root or any workspace member, of either lane — that the declared range admits the blessed version and the lockfile actually resolves to it (the stale-lockfile class). A package with a candidate (one no hold covers) also accepts the candidate and anything between: a range admitting either passes, and so does a lock from the blessed version up to the candidate. A range that does not admit the blessed version is rewritten to `^<blessed>`, except an exact pin, which stays exact and moves to the blessed version. An npm alias (`"@inixiative/session-archive": "npm:@inixiative/archive@^0.2.1"`) is held to its target's blessed version and rewritten as an alias; `workspace:`, `file:` and `link:` ranges are a repo linking itself and are left alone.
+
+`check` also runs the **retired-terms** rule (alone: `terms`), which keeps public copy from rotting back to names the project retired. It reads text people read, never code identifiers: every Markdown, MDX, HTML and Astro file a repo tracks, and each `package.json` `description`. Fixtures, changelogs (history records the rename), `node_modules`, `dist`, `build`, `coverage` and `tmp` are skipped. The list lives in `src/retiredTerms.ts`, each term with the word to use instead, and comes from the workspace CLAUDE.md "Dead concepts" and the copy brief's "Retired words":
+
+| Term | Checked in | Use instead |
+| --- | --- | --- |
+| Kastle, Castle (capitalised) | every doc | Kingdom, owner, integration or Signet |
+| `connectionId` | every doc | `integrationId` |
+| `RuntimeInstallation`, `kingdom_runtime_` | every doc | a Signet enrollment |
+| `signetDemo`, `medicalQuestionStep` | every doc | nothing; demos live in template-workbench |
+| `kingdom-workspace`, `foundry-lab`, `native-candidate` | every doc | the canonical repos |
+| foundry-oracle | every doc | Foundry and Oracle, two products |
+| "your own LLM/API keys" | every doc | your own subscriptions |
+| Cartographer, Librarian, Artificer, Steward (capitalised) | READMEs, package descriptions, site pages only | say what it does; Foundry's code still has a Librarian and a Cartographer |
+
+Left out on purpose, because a pattern would flag mostly legitimate text: "medical" (the doctor's-visit story is allowed in marketing), "Connection" as a word (WebSocket and database connections), "principal" (the permissions README's glossary word for any holder, job titles, the principal–agent problem), and "Cursor as a runtime" or "token savings" (a phrase can't tell a claim from a comparison).
+
+Per repo, in `scripts/ci/retired-terms/` (the same shape as template's doc-freshness rule):
+
+- `allow.txt` for legitimate uses: `<term>` allows it everywhere, `<path>\t<term>` in one file, or under a directory when the path ends in `/` (a retired-names table, a history doc). Stale copy never goes here.
+- `baseline.txt` for uses that predate the rule, `<path>\t<term>\t<count>`: reported as one warning, not failed. A use beyond the count fails, and so does a count that dropped (lower or delete the line), so the baseline only shrinks. `terms --write-baseline` writes it when there is none, and later only to shrink it: it refuses to add a use.
 
 `sync` applies every fix (deleting member toolchain entries and their stale member links), re-locks via `bun install` (`--force` when a second toolchain copy survives), and runs `bun update` on stale ecosystem entries in the directory that declares them. It refuses to run on a dirty working tree without `--force`. The react preset is inferred from a `react` dependency; override with `--preset`. Missing scripts are filled with defaults; existing script bodies are never touched.
 
@@ -142,7 +163,7 @@ jobs:
     uses: inixiative/config/.github/workflows/lib-ci.yml@main
 ```
 
-`lib-ci.yml` pins bun from `.bun-version`, installs with `--frozen-lockfile` (kills the stale-lockfile class), runs `inixiative-config check .`, then the repo's own `bun run check`.
+`lib-ci.yml` pins bun from `.bun-version`, installs with `--frozen-lockfile` (kills the stale-lockfile class), runs `inixiative-config check .` (retired terms included), then the repo's own `bun run check`. A repo that doesn't use `lib-ci.yml` (template, Kingdom, Oracle, agent-session, gloss, Tribe) adopts the retired-terms rule by running `bunx inixiative-config terms .` from its own CI rules (template: a `scripts/ci/rules/retired-terms.sh` beside `doc-freshness.sh`).
 
 ## Release flow
 
