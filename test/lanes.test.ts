@@ -160,6 +160,7 @@ describe('the BOM', () => {
     const all = blessedVersions(manifest);
     for (const [name, hold] of Object.entries(manifest.holds ?? {})) {
       expect(LANES.some((lane) => name in lanePackages(manifest, lane))).toBe(true);
+      expect(hold.below).toMatch(/^\d+\.\d+\.\d+$/);
       expect(hold.reason.length).toBeGreaterThan(0);
       expect(compare(hold.below, all[name])).toBeGreaterThan(0);
     }
