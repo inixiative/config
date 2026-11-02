@@ -54,13 +54,5 @@
     "@inixiative/archive": "0.32.0",
     "@inixiative/atlas": "0.5.0",
     "@inixiative/signet": "0.11.1"
-  },
-  "holds": {
-    "@inixiative/signet": {
-      "below": "0.12.0",
-      "reason": "0.12 breaks the grants contract that prod Kingdom (0.11) speaks",
-      "until": "the Kingdom grants cutover",
-      "owner": "inixiative-bf"
-    }
   }
 }
