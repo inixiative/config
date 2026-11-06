@@ -1,6 +1,6 @@
 {
   "name": "@inixiative/config",
-  "version": "0.5.199",
+  "version": "0.5.200",
   "description": "Shared toolchain and theme for the inixiative packages: tsconfig/biome/tsup presets, theme CSS, a version manifest (BOM), and a sync/check/train CLI",
   "type": "module",
   "license": "MIT",
