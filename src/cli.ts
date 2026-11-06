@@ -287,8 +287,8 @@ if (command === 'train') {
   const failed: string[] = [];
   const failedLanes = new Set<Lane>();
   const committed = new Set<string>();
-  /** Branches to push and open a PR for: consumer syncs and adoptions. */
-  const reviewBranches: { dir: string; branch: string; base: string }[] = [];
+  /** Adoption branches to push. No PR: the branch is the record, and blessing waits on its merge. */
+  const adoptionBranches: { dir: string; branch: string }[] = [];
   /**
    * Repos whose default branch is not yet on candidates they use — each holds those candidates
    * back from blessing: an adoption branch opened this run or waiting from an earlier one, an
@@ -312,7 +312,11 @@ if (command === 'train') {
         cwd: repo,
         stdio: 'inherit',
       });
-    } else git(repo, 'worktree', 'remove', '--force', path);
+    } else {
+      git(repo, 'worktree', 'remove', '--force', path);
+      // The worktree sits one level inside its own `inixiative-train-*` dir.
+      rmSync(dirname(path), { recursive: true, force: true });
+    }
   };
   process.on('exit', () => {
     for (const entry of worktrees.splice(0)) removeWorktree(entry);
@@ -463,7 +467,7 @@ if (command === 'train') {
     if (!remote && !local) return false;
     const state = remote ? 'unmerged' : 'unpushed';
     console.log(
-      `⏳ adopting ${moving.join(', ')} on ${branch} — ${state === 'unmerged' ? 'waiting for it to merge' : 'never pushed: push it and open its PR'}`,
+      `⏳ adopting ${moving.join(', ')} on ${branch} — ${state === 'unmerged' ? 'waiting for it to merge' : 'never pushed: push it'}`,
     );
     waiting.push({ name: checkout.name, dir: checkout.dir, moving, state, branch });
     walked.add(checkout.dir);
@@ -528,64 +532,13 @@ if (command === 'train') {
   const defaultBranch = (cwd: string): string => offDefaultBranch(cwd)?.main ?? currentBranch(cwd);
 
   /**
-   * Commit a consumer's passing re-lock on a review branch, in a worktree, and put the checkout
-   * back as it was. When it moves onto candidates the branch is their adoption, and holds them
-   * back until it merges: its default branch is still on the previous versions.
-   */
-  const reviewBranch = (checkout: Checkout, packagePaths: string[], moving: string[]) => {
-    const branch =
-      moving.length > 0
-        ? adoptionBranch(moving)
-        : freeBranch(checkout.dir, `train/ecosystem-sync-${new Date().toISOString().slice(0, 10)}`);
-    const base = defaultBranch(checkout.dir);
-    const opened = effect(
-      `create review branch ${branch} in ${checkout.name} (in a worktree; the checkout stays on ${base})`,
-      true,
-      () => {
-        const branchCheckout = worktree(checkout, branch);
-        for (const path of [...packagePaths, 'bun.lock']) {
-          if (existsSync(join(checkout.dir, path))) {
-            writeFileSync(join(branchCheckout.dir, path), readFileSync(join(checkout.dir, path)));
-          }
-        }
-        restore(checkout);
-        try {
-          // The commit hooks typecheck, so the worktree needs its own install.
-          relockAndCheck(branchCheckout, false);
-          const message =
-            moving.length > 0
-              ? `chore: adopt ${moving.map((name) => `${name}@${manifest.candidates?.[name]}`).join(', ')}`
-              : undefined;
-          if (!commitOwned(branchCheckout, packagePaths, true, message)) {
-            console.log(`✓ nothing to commit for ${checkout.name} after its re-lock`);
-            dropBranch(checkout, branch);
-            return false;
-          }
-        } catch (error) {
-          dropBranch(checkout, branch);
-          throw error;
-        }
-        followers.push({ checkout: branchCheckout, onBranch: true });
-        console.log(`committed on ${branch} for review; ${checkout.name} stays on ${base}`);
-        return true;
-      },
-    );
-    if (!opened) return;
-    reviewBranches.push({ dir: checkout.dir, branch, base });
-    if (moving.length > 0) {
-      waiting.push({ name: checkout.name, dir: checkout.dir, moving, state: 'opened', branch });
-    }
-  };
-
-  /**
    * A repo that fails against candidates adopts them on `train/adopt-<pkg>-<version>`: re-lock in
    * a worktree, run its `train:adopt` script if it declares one (Foundry re-records cassettes),
-   * commit everything, and open a PR whose CI must pass against the candidates. The candidates
-   * stay unblessed until it merges and a later train finds the repo on them.
+   * commit everything. `--push` pushes the branch and opens no PR. The candidates stay unblessed
+   * until it merges and a later train finds the repo on them.
    */
   const adopt = (checkout: Checkout, moving: string[]) => {
     const branch = adoptionBranch(moving);
-    const base = defaultBranch(checkout.dir);
     const label = moving.map((name) => `${name}@${manifest.candidates?.[name]}`).join(', ');
     const script = checkout.pkg.scripts?.['train:adopt'];
     try {
@@ -605,7 +558,7 @@ if (command === 'train') {
               }).status !== 0
             ) {
               console.log(
-                `⚠ train:adopt failed in ${checkout.name} — the PR needs work before it merges`,
+                `⚠ train:adopt failed in ${checkout.name} — the branch needs work before it merges`,
               );
             }
             git(branchCheckout.dir, 'add', '-A');
@@ -625,7 +578,7 @@ if (command === 'train') {
           followers.push({ checkout: branchCheckout, onBranch: true });
         },
       );
-      reviewBranches.push({ dir: checkout.dir, branch, base });
+      adoptionBranches.push({ dir: checkout.dir, branch });
       waiting.push({ name: checkout.name, dir: checkout.dir, moving, state: 'opened', branch });
     } catch (error) {
       if (!(error instanceof Abort)) throw error;
@@ -812,7 +765,8 @@ if (command === 'train') {
   }
 
   // Consumers publish nothing. They follow every blessed set and its candidates, after all
-  // lanes, and their changes go through review on a branch: the checkout itself stays on main.
+  // lanes. A passing re-lock commits on the default branch, like a lane repo's; one that fails
+  // against candidates adopts them on a branch.
   if (plan.consumers.length > 0 || plan.missingConsumers.length > 0) {
     console.log(
       `\n═ consumers: ${plan.consumers.map((checkout) => checkout.name).join(' → ') || '(none)'}`,
@@ -842,7 +796,13 @@ if (command === 'train') {
     }
     try {
       relockAndCheck(checkout);
-      reviewBranch(checkout, inspection.packagePaths, moving);
+      const message =
+        moving.length > 0
+          ? `chore: adopt ${moving.map((name) => `${name}@${manifest.candidates?.[name]}`).join(', ')}`
+          : undefined;
+      if (commitOwned(checkout, inspection.packagePaths, true, message))
+        committed.add(checkout.dir);
+      followers.push({ checkout, onBranch: false });
       walked.add(checkout.dir);
     } catch (error) {
       if (!(error instanceof Abort)) throw error;
@@ -905,7 +865,7 @@ if (command === 'train') {
 
   const why = {
     opened: 'opened this run',
-    unmerged: 'waiting for its PR to merge',
+    unmerged: 'waiting for its branch to merge',
     unpushed: 'committed but never pushed',
     failed: 'the train could not commit it — adopt by hand',
     unverified: 'not verified this run',
@@ -923,14 +883,10 @@ if (command === 'train') {
   }
   for (const line of holdLines(manifest)) console.log(line);
   if (waiting.length > 0) {
-    console.log('pending (merge each adoption PR, then run the train again to bless):');
+    console.log('pending (merge each adoption branch, then run the train again to bless):');
     for (const entry of waiting) {
-      const url =
-        entry.state === 'unmerged' && !dryRun && entry.branch
-          ? prUrl(entry.dir, entry.branch)
-          : null;
       console.log(
-        `  ${entry.name}: ${entry.branch ? `${entry.branch} — ` : ''}${why[entry.state]}${url ? ` ${url}` : ''}`,
+        `  ${entry.name}: ${entry.branch ? `${entry.branch} — ` : ''}${why[entry.state]}`,
       );
     }
   }
@@ -1028,12 +984,26 @@ if (command === 'train') {
     }
   }
 
+  // A repo this run moved (main committed, or a fresh adoption) is on the whole target, so every
+  // other train branch in it is superseded.
+  const moved = [...new Set([...committed, ...adoptionBranches.map((entry) => entry.dir)])];
+  const keep = new Set(adoptionBranches.map((entry) => `${entry.dir}\0${entry.branch}`));
+  const superseded = (repoDir: string) => {
+    const refs = (prefix: string) =>
+      git(repoDir, 'for-each-ref', '--format=%(refname:short)', prefix)
+        .stdout.split('\n')
+        .map((ref) => ref.trim().replace(/^origin\//, ''))
+        .filter((branch) => branch.startsWith('train/') && !keep.has(`${repoDir}\0${branch}`));
+    return { local: refs('refs/heads/train/'), remote: refs('refs/remotes/origin/train/') };
+  };
+
   if (dryRun) {
     console.log(
-      `\ndry run complete — a real train would commit in ${committed.size} repo(s) and open ${reviewBranches.length} review branch(es)${commandLine.push ? ', then push them' : ''}:`,
+      `\ndry run complete — a real train would commit in ${committed.size} repo(s) and open ${adoptionBranches.length} adoption branch(es)${commandLine.push ? ', then push them and delete the train branches they supersede' : ''}:`,
     );
     for (const repoDir of committed) console.log(`  ${repoDir}`);
-    for (const { dir: repoDir, branch } of reviewBranches) console.log(`  ${repoDir} (${branch})`);
+    for (const { dir: repoDir, branch } of adoptionBranches)
+      console.log(`  ${repoDir} (${branch})`);
   } else if (commandLine.push) {
     for (const repoDir of committed) {
       if (spawnSync('git', ['push'], { cwd: repoDir, stdio: 'inherit' }).status !== 0) {
@@ -1041,52 +1011,47 @@ if (command === 'train') {
         process.exit(1);
       }
     }
-    for (const { dir: repoDir, branch, base } of reviewBranches) {
+    for (const { dir: repoDir, branch } of adoptionBranches) {
       const push = spawnSync('git', ['push', '-u', 'origin', branch], {
         cwd: repoDir,
         stdio: 'inherit',
       });
-      const pr =
-        push.status === 0 &&
-        spawnSync('gh', ['pr', 'create', '--fill', '--base', base, '--head', branch], {
-          cwd: repoDir,
-          stdio: 'inherit',
-        }).status === 0;
-      if (!pr) console.error(`✗ could not push ${branch} and open its PR in ${repoDir}`);
+      if (push.status !== 0) console.error(`✗ could not push ${branch} in ${repoDir}`);
     }
-    console.log(`pushed: ${committed.size + reviewBranches.length} repos`);
-  } else if (committed.size > 0 || reviewBranches.length > 0) {
+    for (const repoDir of moved) {
+      git(repoDir, 'fetch', '--quiet', '--prune', 'origin');
+      const { local, remote } = superseded(repoDir);
+      const gone = new Set<string>();
+      for (const branch of remote) {
+        if (git(repoDir, 'push', '--quiet', 'origin', '--delete', branch).status === 0) {
+          gone.add(branch);
+        } else console.error(`✗ could not delete origin/${branch} in ${repoDir}`);
+      }
+      for (const branch of local) {
+        if (git(repoDir, 'branch', '-D', branch).status === 0) gone.add(branch);
+        else console.error(`✗ could not delete ${branch} in ${repoDir}`);
+      }
+      if (gone.size > 0) console.log(`🧹 ${repoDir}: deleted ${[...gone].join(', ')}`);
+    }
+    console.log(`pushed: ${committed.size + adoptionBranches.length} repos`);
+  } else if (committed.size > 0 || adoptionBranches.length > 0) {
     console.log('train does not push without --push — review its commits, then push:');
     for (const repoDir of committed) console.log(`  git -C ${repoDir} push`);
-    for (const { dir: repoDir, branch, base } of reviewBranches) {
-      console.log(
-        `  git -C ${repoDir} push -u origin ${branch} && (cd ${repoDir} && gh pr create --fill --base ${base})`,
-      );
+    for (const { dir: repoDir, branch } of adoptionBranches) {
+      console.log(`  git -C ${repoDir} push -u origin ${branch}`);
+    }
+    for (const repoDir of moved) {
+      const { local, remote } = superseded(repoDir);
+      for (const branch of remote)
+        console.log(`  git -C ${repoDir} push origin --delete ${branch}`);
+      if (local.length > 0) console.log(`  git -C ${repoDir} branch -D ${local.join(' ')}`);
     }
   }
   process.exit(failed.length > 0 ? 1 : 0);
 }
 
-/** The open PR for `branch`, if gh can say. */
-function prUrl(cwd: string, branch: string): string | null {
-  const view = spawnSync('gh', ['pr', 'view', branch, '--json', 'url', '--jq', '.url'], {
-    cwd,
-    encoding: 'utf8',
-  });
-  return view.status === 0 ? view.stdout.trim() || null : null;
-}
-
 function currentBranch(cwd: string): string {
   return git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim();
-}
-
-/** `name`, or `name-2`, `name-3`… when a branch of that name already exists. */
-function freeBranch(cwd: string, name: string): string {
-  const taken = (candidate: string) =>
-    git(cwd, 'rev-parse', '--verify', '--quiet', `refs/heads/${candidate}`).status === 0;
-  let candidate = name;
-  for (let n = 2; taken(candidate); n++) candidate = `${name}-${n}`;
-  return candidate;
 }
 
 /** The registry can lag a publish by seconds; a version the train records must be one it serves. */
