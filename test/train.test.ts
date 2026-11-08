@@ -180,7 +180,9 @@ describe('train --dry-run', () => {
 /**
  * A whole train, for real but offline: a throwaway config clone (its own versions.json, its own
  * lock under a throwaway HOME), npm shimmed onto a registry directory, bun shimmed so a repo's
- * check fails while it carries `needs-adopt` and lacks `adopted` (which its `train:adopt` writes).
+ * check fails while it carries `needs-adopt` and lacks `adopted` (which its `train:adopt` writes,
+ * beside a `drift.pending.json` recording). `adopt-fails` makes `train:adopt` exit 1 after writing
+ * the recording; `check-always-fails` makes the check fail whatever `train:adopt` wrote.
  */
 const offlineTrain = () => {
   const base = mkdtempSync(join(tmpdir(), 'inixiative-two-phase-'));
@@ -260,8 +262,8 @@ esac`,
   shim(
     'bun',
     `case "$1 $2" in
-"run check") [ -f needs-adopt ] && [ ! -f adopted ] && { touch generated.txt; exit 1; }; exit 0 ;;
-"run train:adopt") [ -f apps/api/.env.local ] && touch adopted ;;
+"run check") [ -f check-always-fails ] && exit 1; [ -f needs-adopt ] && [ ! -f adopted ] && { touch generated.txt; exit 1; }; exit 0 ;;
+"run train:adopt") touch drift.pending.json; [ -f adopt-fails ] && exit 1; [ -f apps/api/.env.local ] && touch adopted ;;
 "run worktree:create") exec "${realGit}" worktree add -q -b "$4" ".worktrees/$(echo "$4" | tr / -)" "$3" ;;
 "run worktree:destroy") exec "${realGit}" worktree remove --force ".worktrees/$3" ;;
 esac
@@ -347,8 +349,12 @@ describe('two-phase blessing', () => {
     // none, so it got a plain linked worktree.
     expect(calls()).toContain('bun run worktree:create main train/adopt-archive-0.19.0');
     expect(calls()).toContain('bun run worktree:destroy train-adopt-archive-0.19.0 --force');
-    // train:adopt ran with the checkout's nested, ignored env file in place.
+    // train:adopt ran with the checkout's nested, ignored env file in place; it passed and the
+    // check passed after it, so its output is on the branch.
     expect(gitOut(at('foundry'), 'ls-tree', '--name-only', adoption)).toContain('adopted');
+    expect(gitOut(at('foundry'), 'ls-tree', '--name-only', adoption)).toContain(
+      'drift.pending.json',
+    );
 
     // Run 2, not merged and never pushed: the train waits on it, says so, and opens nothing new.
     const unpushed = train();
@@ -431,6 +437,50 @@ describe('two-phase blessing', () => {
     expect(gitOut(at('oracle'), 'branch', '--list', 'train/*')).toBe('');
     expect(out).toContain('deleted train/adopt-archive-0.18.5');
   }, 60_000);
+
+  /** Commit a marker file on foundry's main, as the repo's own state before the train runs. */
+  const mark = (dir: string, file: string) => {
+    write(join(dir, file), '');
+    run(dir, realGit, 'add', '--', file);
+    run(dir, realGit, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', file);
+  };
+
+  for (const [marker, warning] of [
+    ['adopt-fails', '⚠ train:adopt failed in @inixiative/foundry — its output is left out'],
+    [
+      'check-always-fails',
+      '⚠ check still fails in @inixiative/foundry after train:adopt — its output is left out',
+    ],
+  ] as const) {
+    test(`${marker}: the adoption commits the re-lock only, holds the candidate and leaves nothing behind`, () => {
+      const { train, bom, at } = offlineTrain();
+      mark(at('foundry'), marker);
+      const { status, out } = train();
+      expect(status).toBe(0);
+      expect(out).toContain(warning);
+      expect(out).toContain('blessed: nothing');
+      expect(bom().candidates).toEqual({ '@inixiative/archive': '0.19.0' });
+      expect(out).toContain(
+        '@inixiative/foundry: train/adopt-archive-0.19.0 — opened this run with the re-lock only',
+      );
+
+      // The branch carries what the train wrote and nothing the failed step produced.
+      const adoption = 'train/adopt-archive-0.19.0';
+      expect(gitOut(at('foundry'), 'show', `${adoption}:package.json`)).toContain('"^0.19.0"');
+      expect(
+        gitOut(at('foundry'), 'diff', '--name-only', `${adoption}~1`, adoption).split('\n'),
+      ).toEqual(['package.json']);
+      const tree = gitOut(at('foundry'), 'ls-tree', '-r', '--name-only', adoption);
+      expect(tree).not.toContain('drift.pending.json');
+      expect(tree).not.toContain('adopted');
+
+      // The checkout is back on a clean main, with no worktree and no stray recording.
+      expect(gitOut(at('foundry'), 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('main');
+      expect(gitOut(at('foundry'), 'status', '--porcelain', '--ignored')).not.toContain('pending');
+      expect(gitOut(at('foundry'), 'status', '--porcelain')).toBe('');
+      expect(gitOut(at('foundry'), 'worktree', 'list').split('\n')).toHaveLength(1);
+    }, 60_000);
+  }
 
   test('an adoption its hooks reject leaves no branch behind and holds the candidate', () => {
     const { train, bom, at } = offlineTrain();

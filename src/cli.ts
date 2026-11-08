@@ -298,7 +298,7 @@ if (command === 'train') {
     name: string;
     dir: string;
     moving: string[];
-    state: 'opened' | 'unmerged' | 'unpushed' | 'failed' | 'unverified';
+    state: 'opened' | 'incomplete' | 'unmerged' | 'unpushed' | 'failed' | 'unverified';
     branch?: string;
   }[] = [];
   /** Checkouts this run walked to an outcome; every other repo is unverified. */
@@ -533,35 +533,52 @@ if (command === 'train') {
 
   /**
    * A repo that fails against candidates adopts them on `train/adopt-<pkg>-<version>`: re-lock in
-   * a worktree, run its `train:adopt` script if it declares one (Foundry re-records cassettes),
-   * commit everything. `--push` pushes the branch and opens no PR. The candidates stay unblessed
-   * until it merges and a later train finds the repo on them.
+   * a worktree and run its `train:adopt` script if it declares one (Foundry re-records cassettes).
+   * The commit holds the train's own writes (package.json files, bun.lock); what `train:adopt`
+   * produced joins them only when the script passed and the repo's check passes with it in place.
+   * Anything else is discarded with the worktree, and the branch is reported as needing work.
+   * `--push` pushes the branch and opens no PR. The candidates stay unblessed until it merges and a
+   * later train finds the repo on them.
    */
   const adopt = (checkout: Checkout, moving: string[]) => {
     const branch = adoptionBranch(moving);
     const label = moving.map((name) => `${name}@${manifest.candidates?.[name]}`).join(', ');
     const script = checkout.pkg.scripts?.['train:adopt'];
     try {
-      effect(
-        `open ${branch} in ${checkout.name}: re-lock onto ${label}${script ? ', run train:adopt' : ''}, commit`,
-        undefined,
+      const complete = effect(
+        `open ${branch} in ${checkout.name}: re-lock onto ${label}${script ? ', run train:adopt and keep its output only if it and the check pass' : ''}, commit`,
+        true,
         () => {
           const branchCheckout = worktree(checkout, branch);
+          let keepOutput = false;
           try {
-            bumpRanges(branchCheckout);
+            const { inspection } = bumpRanges(branchCheckout);
             relockAndCheck(branchCheckout, false);
-            if (
-              script &&
-              spawnSync('bun', ['run', 'train:adopt'], {
-                cwd: branchCheckout.dir,
-                stdio: 'inherit',
-              }).status !== 0
-            ) {
-              console.log(
-                `⚠ train:adopt failed in ${checkout.name} — the branch needs work before it merges`,
-              );
+            const owned = [...inspection.packagePaths, 'bun.lock'].filter((path) =>
+              existsSync(join(branchCheckout.dir, path)),
+            );
+            if (script) {
+              const run = (name: string) =>
+                spawnSync('bun', ['run', name], { cwd: branchCheckout.dir, stdio: 'inherit' })
+                  .status === 0;
+              if (!run('train:adopt')) {
+                console.log(
+                  `⚠ train:adopt failed in ${checkout.name} — its output is left out; ${branch} carries the re-lock only and needs work before it merges`,
+                );
+              } else if (!run('check')) {
+                console.log(
+                  `⚠ check still fails in ${checkout.name} after train:adopt — its output is left out; ${branch} carries the re-lock only and needs work before it merges`,
+                );
+              } else {
+                keepOutput = true;
+              }
             }
-            git(branchCheckout.dir, 'add', '-A');
+            const staged = keepOutput
+              ? git(branchCheckout.dir, 'add', '-A')
+              : git(branchCheckout.dir, 'add', '--', ...owned);
+            if (staged.status !== 0) {
+              throw new Abort(`git add failed on ${branch} in ${checkout.name}`);
+            }
             const commit = spawnSync('git', ['commit', '-m', `chore: adopt ${label}`], {
               cwd: branchCheckout.dir,
               stdio: 'inherit',
@@ -571,15 +588,25 @@ if (command === 'train') {
                 `commit failed on ${branch} in ${checkout.name} (its hooks reject the adoption)`,
               );
             }
+            // What the commit left out goes now, so nothing of a failed step outlives the commit.
+            git(branchCheckout.dir, 'reset', '--quiet', '--hard', 'HEAD');
+            git(branchCheckout.dir, 'clean', '--quiet', '-fd');
           } catch (error) {
             dropBranch(checkout, branch);
             throw error;
           }
           followers.push({ checkout: branchCheckout, onBranch: true });
+          return !script || keepOutput;
         },
       );
       adoptionBranches.push({ dir: checkout.dir, branch });
-      waiting.push({ name: checkout.name, dir: checkout.dir, moving, state: 'opened', branch });
+      waiting.push({
+        name: checkout.name,
+        dir: checkout.dir,
+        moving,
+        state: complete ? 'opened' : 'incomplete',
+        branch,
+      });
     } catch (error) {
       if (!(error instanceof Abort)) throw error;
       failed.push(checkout.name);
@@ -865,6 +892,8 @@ if (command === 'train') {
 
   const why = {
     opened: 'opened this run',
+    incomplete:
+      'opened this run with the re-lock only — train:adopt or the check after it failed, so its output was left out; finish it on the branch',
     unmerged: 'waiting for its branch to merge',
     unpushed: 'committed but never pushed',
     failed: 'the train could not commit it — adopt by hand',
