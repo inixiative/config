@@ -181,8 +181,10 @@ describe('train --dry-run', () => {
  * A whole train, for real but offline: a throwaway config clone (its own versions.json, its own
  * lock under a throwaway HOME), npm shimmed onto a registry directory, bun shimmed so a repo's
  * check fails while it carries `needs-adopt` and lacks `adopted` (which its `train:adopt` writes,
- * beside a `drift.pending.json` recording). `adopt-fails` makes `train:adopt` exit 1 after writing
- * the recording; `check-always-fails` makes the check fail whatever `train:adopt` wrote.
+ * beside a `drift.pending.json` recording). Marker files committed in a repo change that:
+ * `adopt-fails` makes `train:adopt` exit 1 after writing the recording, `adopt-touches-pkg` makes
+ * it edit package.json, `check-always-fails` fails the check whatever `train:adopt` wrote,
+ * `check-writes` makes the check leave an artifact, `check-hangs` makes it hang in a worktree.
  */
 const offlineTrain = () => {
   const base = mkdtempSync(join(tmpdir(), 'inixiative-two-phase-'));
@@ -262,8 +264,12 @@ esac`,
   shim(
     'bun',
     `case "$1 $2" in
-"run check") [ -f check-always-fails ] && exit 1; [ -f needs-adopt ] && [ ! -f adopted ] && { touch generated.txt; exit 1; }; exit 0 ;;
-"run train:adopt") touch drift.pending.json; [ -f adopt-fails ] && exit 1; [ -f apps/api/.env.local ] && touch adopted ;;
+"run check") [ -f check-writes ] && touch check-artifact.txt
+  case "$PWD" in *.worktrees*) [ -f check-hangs ] && exec sleep 30 ;; esac
+  [ -f check-always-fails ] && exit 1; [ -f needs-adopt ] && [ ! -f adopted ] && { touch generated.txt; exit 1; }; exit 0 ;;
+"run train:adopt") touch drift.pending.json
+  [ -f adopt-touches-pkg ] && sed -i.bak 's/"version": "0.5.0"/"version": "0.5.0-adopt"/' package.json && rm -f package.json.bak
+  [ -f adopt-fails ] && exit 1; [ -f apps/api/.env.local ] && touch adopted ;;
 "run worktree:create") exec "${realGit}" worktree add -q -b "$4" ".worktrees/$(echo "$4" | tr / -)" "$3" ;;
 "run worktree:destroy") exec "${realGit}" worktree remove --force ".worktrees/$3" ;;
 esac
@@ -445,11 +451,21 @@ describe('two-phase blessing', () => {
     run(dir, realGit, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', file);
   };
 
-  for (const [marker, warning] of [
-    ['adopt-fails', '⚠ train:adopt failed in @inixiative/foundry — its output is left out'],
+  const adoption = 'train/adopt-archive-0.19.0';
+  const output = `${adoption}-output`;
+
+  for (const [marker, warning, reason, saved] of [
+    [
+      'adopt-fails',
+      '⚠ train:adopt failed in @inixiative/foundry — its output is left out',
+      'train:adopt failed',
+      ['drift.pending.json'],
+    ],
     [
       'check-always-fails',
       '⚠ check still fails in @inixiative/foundry after train:adopt — its output is left out',
+      'check failed after train:adopt',
+      ['adopted', 'drift.pending.json'],
     ],
   ] as const) {
     test(`${marker}: the adoption commits the re-lock only, holds the candidate and leaves nothing behind`, () => {
@@ -461,11 +477,26 @@ describe('two-phase blessing', () => {
       expect(out).toContain('blessed: nothing');
       expect(bom().candidates).toEqual({ '@inixiative/archive': '0.19.0' });
       expect(out).toContain(
-        '@inixiative/foundry: train/adopt-archive-0.19.0 — opened this run with the re-lock only',
+        `@inixiative/foundry: train/adopt-archive-0.19.0 — incomplete (${reason})`,
+      );
+      expect(out).toContain(
+        '@inixiative/archive@0.19.0 — waiting on @inixiative/foundry (train/adopt-archive-0.19.0, incomplete)',
+      );
+      expect(gitOut(at('foundry'), 'log', '-1', '--format=%s', adoption)).toBe(
+        'chore: adopt @inixiative/archive@0.19.0 (incomplete)',
       );
 
+      // What the step produced is kept on a side branch, on top of the adoption commit, and the
+      // run says where.
+      expect(out).toContain(`its output is saved on ${output}`);
+      expect(gitOut(at('foundry'), 'rev-parse', `${output}~1`)).toBe(
+        gitOut(at('foundry'), 'rev-parse', adoption),
+      );
+      expect(
+        gitOut(at('foundry'), 'diff', '--name-only', `${output}~1`, output).split('\n').sort(),
+      ).toEqual([...saved]);
+
       // The branch carries what the train wrote and nothing the failed step produced.
-      const adoption = 'train/adopt-archive-0.19.0';
       expect(gitOut(at('foundry'), 'show', `${adoption}:package.json`)).toContain('"^0.19.0"');
       expect(
         gitOut(at('foundry'), 'diff', '--name-only', `${adoption}~1`, adoption).split('\n'),
@@ -481,6 +512,87 @@ describe('two-phase blessing', () => {
       expect(gitOut(at('foundry'), 'worktree', 'list').split('\n')).toHaveLength(1);
     }, 60_000);
   }
+
+  test('a later run still reports an incomplete adoption and says exactly what to run', () => {
+    const { train, at } = offlineTrain();
+    mark(at('foundry'), 'adopt-fails');
+    train();
+    const second = train();
+    expect(second.out).toContain(
+      `⏳ adopting @inixiative/archive on ${adoption} — incomplete (train:adopt failed)`,
+    );
+    expect(second.out).not.toContain('never pushed: push it');
+    expect(second.out).toContain('bun run train:adopt && bun run check');
+    expect(second.out).toContain("--trailer 'Train-Adopt: complete'");
+    expect(second.out).toContain(
+      `@inixiative/foundry: ${adoption} — incomplete (train:adopt failed)`,
+    );
+    expect(second.out).toContain('blessed: nothing');
+
+    // Finished by hand with the trailer, the branch is an ordinary pending adoption again.
+    run(
+      at('foundry'),
+      realGit,
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@t',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'finish',
+      '--trailer',
+      'Train-Adopt: complete',
+    );
+    const branchTip = gitOut(at('foundry'), 'rev-parse', 'HEAD');
+    run(at('foundry'), realGit, 'reset', '-q', '--hard', 'HEAD~1');
+    run(at('foundry'), realGit, 'update-ref', `refs/heads/${adoption}`, branchTip);
+    const third = train();
+    expect(third.out).toContain(`${adoption} — never pushed: push it`);
+    expect(third.out).not.toContain('incomplete (');
+  }, 90_000);
+
+  test('a failed train:adopt that edits a package.json leaves that edit out of the adoption', () => {
+    const { train, at } = offlineTrain();
+    mark(at('foundry'), 'adopt-fails');
+    mark(at('foundry'), 'adopt-touches-pkg');
+    train();
+    const onBranch = gitOut(at('foundry'), 'show', `${adoption}:package.json`);
+    expect(onBranch).toContain('"^0.19.0"');
+    expect(onBranch).not.toContain('0.5.0-adopt');
+    expect(gitOut(at('foundry'), 'show', `${output}:package.json`)).toContain('0.5.0-adopt');
+  }, 60_000);
+
+  test('a passing adoption commits what train:adopt produced, never what the check left', () => {
+    const { train, at } = offlineTrain();
+    mark(at('foundry'), 'check-writes');
+    const { out } = train();
+    expect(out).toContain(`@inixiative/foundry: ${adoption} — opened this run`);
+    const tree = gitOut(at('foundry'), 'ls-tree', '-r', '--name-only', adoption);
+    expect(tree).toContain('adopted');
+    expect(tree).toContain('drift.pending.json');
+    expect(tree).not.toContain('check-artifact.txt');
+    expect(gitOut(at('foundry'), 'branch', '--list', output)).toBe('');
+  }, 60_000);
+
+  test('the check after train:adopt times out as a failure', () => {
+    const { train, at } = offlineTrain();
+    mark(at('foundry'), 'check-hangs');
+    const { out } = train('--adopt-check-timeout=1');
+    expect(out).toContain('check timed out after 1s in @inixiative/foundry after train:adopt');
+    expect(out).toContain(
+      `@inixiative/foundry: ${adoption} — incomplete (check failed after train:adopt)`,
+    );
+  }, 60_000);
+
+  test('a dry run says how an adoption would be decided', () => {
+    const { train } = offlineTrain();
+    const { out } = train('--dry-run');
+    expect(out).toContain(
+      `[dry-run] would, if its check fails against the candidates, open ${adoption} in @inixiative/foundry: re-lock, run train:adopt, then the check — complete if both pass, else incomplete with the re-lock only and train:adopt's output saved on ${output}`,
+    );
+  }, 60_000);
 
   test('an adoption its hooks reject leaves no branch behind and holds the candidate', () => {
     const { train, bom, at } = offlineTrain();
@@ -576,7 +688,15 @@ describe('parseCommandLine', () => {
       lane: 'agentic',
       dryRun: true,
       push: false,
+      adoptCheckTimeout: 1800,
     });
+    expect(parseCommandLine(['train', '/root', '--adopt-check-timeout=90']).adoptCheckTimeout).toBe(
+      90,
+    );
+    expect(() => parseCommandLine(['train', '/root', '--adopt-check-timeout=soon'])).toThrow(
+      UsageError,
+    );
+    expect(() => parseCommandLine(['check', '--adopt-check-timeout=90'])).toThrow(UsageError);
   });
 
   test('a flag belongs to its command only', () => {

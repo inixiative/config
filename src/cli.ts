@@ -53,7 +53,7 @@ try {
   );
   process.exit(2);
 }
-const { command, positionals, preset: presetFlag, dryRun } = commandLine;
+const { command, positionals, preset: presetFlag, dryRun, adoptCheckTimeout } = commandLine;
 const dir = resolve(positionals[0] ?? '.');
 
 if (command === 'ports') {
@@ -288,7 +288,7 @@ if (command === 'train') {
   const failedLanes = new Set<Lane>();
   const committed = new Set<string>();
   /** Adoption branches to push. No PR: the branch is the record, and blessing waits on its merge. */
-  const adoptionBranches: { dir: string; branch: string }[] = [];
+  const adoptionBranches: { dir: string; branch: string; output?: string }[] = [];
   /**
    * Repos whose default branch is not yet on candidates they use — each holds those candidates
    * back from blessing: an adoption branch opened this run or waiting from an earlier one, an
@@ -300,6 +300,8 @@ if (command === 'train') {
     moving: string[];
     state: 'opened' | 'incomplete' | 'unmerged' | 'unpushed' | 'failed' | 'unverified';
     branch?: string;
+    /** Why an incomplete adoption is incomplete, as its `Train-Adopt` trailer says. */
+    reason?: string;
   }[] = [];
   /** Checkouts this run walked to an outcome; every other repo is unverified. */
   const walked = new Set<string>();
@@ -455,9 +457,32 @@ if (command === 'train') {
     return Number(git(cwd, 'rev-list', '--count', `HEAD..${ref}`).stdout.trim());
   };
 
+  /** The side branch an incomplete adoption's `train:adopt` output is saved on. */
+  const outputBranch = (branch: string) => `${branch}-output`;
+
+  /**
+   * Why the adoption on `ref` is incomplete, or null when it is not: the newest `Train-Adopt`
+   * trailer among the commits `ref` carries beyond HEAD. The train writes `incomplete (<reason>)`;
+   * whoever finishes the branch by hand commits `Train-Adopt: complete`.
+   */
+  const incompleteReason = (cwd: string, ref: string): string | null => {
+    const newest = git(
+      cwd,
+      'log',
+      '--format=%(trailers:key=Train-Adopt,valueonly,separator=%x2C)',
+      `HEAD..${ref}`,
+    )
+      .stdout.split('\n')
+      .map((value) => value.trim())
+      .find(Boolean);
+    if (!newest?.startsWith('incomplete')) return null;
+    return /\((.*)\)/.exec(newest)?.[1] ?? 'no reason recorded';
+  };
+
   /**
    * An earlier train committed this adoption and it hasn't reached the default branch: wait for
-   * it rather than redo it. A branch that was never pushed is reported as such.
+   * it rather than redo it. A branch that was never pushed is reported as such; one the train
+   * committed without `train:adopt`'s output is reported as incomplete, with what to run.
    */
   const pendingAdoption = (checkout: Checkout, moving: string[]): boolean => {
     if (moving.length === 0) return false;
@@ -465,12 +490,35 @@ if (command === 'train') {
     const remote = ahead(checkout.dir, `refs/remotes/origin/${branch}`);
     const local = ahead(checkout.dir, `refs/heads/${branch}`);
     if (!remote && !local) return false;
+    walked.add(checkout.dir);
+    const reason = incompleteReason(
+      checkout.dir,
+      remote ? `refs/remotes/origin/${branch}` : `refs/heads/${branch}`,
+    );
+    if (reason) {
+      const output = outputBranch(branch);
+      const saved = [`refs/heads/${output}`, `refs/remotes/origin/${output}`].some(
+        (ref) => git(checkout.dir, 'rev-parse', '--verify', '--quiet', ref).status === 0,
+      );
+      console.log(`⏳ adopting ${moving.join(', ')} on ${branch} — incomplete (${reason})`);
+      console.log(
+        `  finish it: on ${branch}, run \`bun run train:adopt && bun run check\`, commit what it wrote with \`git commit --trailer 'Train-Adopt: complete'\`, and push${saved ? `; the last train's output is on ${output}` : ''}`,
+      );
+      waiting.push({
+        name: checkout.name,
+        dir: checkout.dir,
+        moving,
+        state: 'incomplete',
+        branch,
+        reason,
+      });
+      return true;
+    }
     const state = remote ? 'unmerged' : 'unpushed';
     console.log(
       `⏳ adopting ${moving.join(', ')} on ${branch} — ${state === 'unmerged' ? 'waiting for it to merge' : 'never pushed: push it'}`,
     );
     waiting.push({ name: checkout.name, dir: checkout.dir, moving, state, branch });
-    walked.add(checkout.dir);
     return true;
   };
 
@@ -532,54 +580,120 @@ if (command === 'train') {
   const defaultBranch = (cwd: string): string => offDefaultBranch(cwd)?.main ?? currentBranch(cwd);
 
   /**
+   * What `train:adopt` wrote in `cwd`, as a tree: the index (the train's own staged writes) plus
+   * every file the step changed, added or deleted since. Null when it wrote nothing.
+   */
+  const captureOutput = (cwd: string): string | null => {
+    const changed = [
+      ...git(cwd, 'diff', '--name-only', '-z').stdout.split('\0'),
+      ...git(cwd, 'ls-files', '--others', '--exclude-standard', '-z').stdout.split('\0'),
+    ].filter(Boolean);
+    if (changed.length === 0) return null;
+    const scratch = mkdtempSync(join(tmpdir(), 'inixiative-train-'));
+    try {
+      const env = { ...process.env, GIT_INDEX_FILE: join(scratch, 'index') };
+      const step = (...args: string[]) => {
+        const result = spawnSync('git', args, { cwd, env, encoding: 'utf8' });
+        if (result.status !== 0) {
+          throw new Abort(`git ${args[0]} failed capturing train:adopt's output`);
+        }
+        return result.stdout.trim();
+      };
+      step('read-tree', git(cwd, 'write-tree').stdout.trim());
+      step('add', '-A', '--', ...changed);
+      return step('write-tree');
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  };
+
+  /** How an adoption is decided, for the dry-run preview and the adoption's own step. */
+  const adoptionPlan = (script: string | undefined, output: string) =>
+    script
+      ? `re-lock, run train:adopt, then the check — complete if both pass, else incomplete with the re-lock only and train:adopt's output saved on ${output}`
+      : 're-lock and commit';
+
+  /** A dry run never fails a check, so it says what an adoption would do if one did. */
+  const previewAdoption = (checkout: Checkout, moving: string[]) => {
+    if (!dryRun || moving.length === 0) return;
+    const branch = adoptionBranch(moving);
+    console.log(
+      `  [dry-run] would, if its check fails against the candidates, open ${branch} in ${checkout.name}: ${adoptionPlan(checkout.pkg.scripts?.['train:adopt'], outputBranch(branch))}`,
+    );
+  };
+
+  /**
    * A repo that fails against candidates adopts them on `train/adopt-<pkg>-<version>`: re-lock in
    * a worktree and run its `train:adopt` script if it declares one (Foundry re-records cassettes).
-   * The commit holds the train's own writes (package.json files, bun.lock); what `train:adopt`
-   * produced joins them only when the script passed and the repo's check passes with it in place.
-   * Anything else is discarded with the worktree, and the branch is reported as needing work.
-   * `--push` pushes the branch and opens no PR. The candidates stay unblessed until it merges and a
-   * later train finds the repo on them.
+   * The train's own writes (package.json files, bun.lock) are staged before the step runs, and
+   * what the step wrote is captured as it exits. Only if it passed and the repo's check then
+   * passes (within `--adopt-check-timeout`) does the commit take that output; otherwise the
+   * commit is the re-lock alone, marked incomplete by its `Train-Adopt` trailer so later trains
+   * keep saying so, and the output is saved on `<branch>-output`. `--push` pushes both and opens
+   * no PR. The candidates stay unblessed until the branch merges and a later train finds the repo
+   * on them.
    */
   const adopt = (checkout: Checkout, moving: string[]) => {
     const branch = adoptionBranch(moving);
+    const output = outputBranch(branch);
     const label = moving.map((name) => `${name}@${manifest.candidates?.[name]}`).join(', ');
     const script = checkout.pkg.scripts?.['train:adopt'];
     try {
-      const complete = effect(
-        `open ${branch} in ${checkout.name}: re-lock onto ${label}${script ? ', run train:adopt and keep its output only if it and the check pass' : ''}, commit`,
-        true,
+      const outcome = effect(
+        `open ${branch} in ${checkout.name}: ${adoptionPlan(script, output)}`,
+        { reason: null as string | null, saved: false },
         () => {
           const branchCheckout = worktree(checkout, branch);
-          let keepOutput = false;
+          let reason: string | null = null;
+          let saved = false;
           try {
             const { inspection } = bumpRanges(branchCheckout);
             relockAndCheck(branchCheckout, false);
             const owned = [...inspection.packagePaths, 'bun.lock'].filter((path) =>
               existsSync(join(branchCheckout.dir, path)),
             );
-            if (script) {
-              const run = (name: string) =>
-                spawnSync('bun', ['run', name], { cwd: branchCheckout.dir, stdio: 'inherit' })
-                  .status === 0;
-              if (!run('train:adopt')) {
-                console.log(
-                  `⚠ train:adopt failed in ${checkout.name} — its output is left out; ${branch} carries the re-lock only and needs work before it merges`,
-                );
-              } else if (!run('check')) {
-                console.log(
-                  `⚠ check still fails in ${checkout.name} after train:adopt — its output is left out; ${branch} carries the re-lock only and needs work before it merges`,
-                );
-              } else {
-                keepOutput = true;
-              }
-            }
-            const staged = keepOutput
-              ? git(branchCheckout.dir, 'add', '-A')
-              : git(branchCheckout.dir, 'add', '--', ...owned);
-            if (staged.status !== 0) {
+            if (git(branchCheckout.dir, 'add', '--', ...owned).status !== 0) {
               throw new Abort(`git add failed on ${branch} in ${checkout.name}`);
             }
-            const commit = spawnSync('git', ['commit', '-m', `chore: adopt ${label}`], {
+            let produced: string | null = null;
+            if (script) {
+              const adopted =
+                spawnSync('bun', ['run', 'train:adopt'], {
+                  cwd: branchCheckout.dir,
+                  stdio: 'inherit',
+                }).status === 0;
+              produced = captureOutput(branchCheckout.dir);
+              const leftOut = `its output is left out; ${branch} carries the re-lock only and needs work before it merges`;
+              if (!adopted) {
+                reason = 'train:adopt failed';
+                console.log(`⚠ train:adopt failed in ${checkout.name} — ${leftOut}`);
+              } else {
+                const check = spawnSync('bun', ['run', 'check'], {
+                  cwd: branchCheckout.dir,
+                  stdio: 'inherit',
+                  timeout: adoptCheckTimeout * 1000,
+                  killSignal: 'SIGKILL',
+                });
+                if (check.status !== 0) {
+                  reason = 'check failed after train:adopt';
+                  console.log(
+                    check.error || check.signal
+                      ? `⚠ check timed out after ${adoptCheckTimeout}s in ${checkout.name} after train:adopt — ${leftOut}`
+                      : `⚠ check still fails in ${checkout.name} after train:adopt — ${leftOut}`,
+                  );
+                }
+              }
+              if (!reason && produced) git(branchCheckout.dir, 'read-tree', produced);
+            }
+            const message = reason
+              ? [
+                  '-m',
+                  `chore: adopt ${label} (incomplete)`,
+                  '-m',
+                  `Train-Adopt: incomplete (${reason})`,
+                ]
+              : ['-m', `chore: adopt ${label}`];
+            const commit = spawnSync('git', ['commit', ...message], {
               cwd: branchCheckout.dir,
               stdio: 'inherit',
             });
@@ -588,24 +702,48 @@ if (command === 'train') {
                 `commit failed on ${branch} in ${checkout.name} (its hooks reject the adoption)`,
               );
             }
-            // What the commit left out goes now, so nothing of a failed step outlives the commit.
+            if (reason && produced) {
+              const saving = spawnSync(
+                'git',
+                [
+                  'commit-tree',
+                  produced,
+                  '-p',
+                  'HEAD',
+                  '-m',
+                  `train:adopt output for ${branch} (${reason}), not adopted`,
+                ],
+                { cwd: branchCheckout.dir, encoding: 'utf8' },
+              );
+              saved =
+                saving.status === 0 &&
+                git(branchCheckout.dir, 'branch', '-f', output, saving.stdout.trim()).status === 0;
+              console.log(
+                saved
+                  ? `  its output is saved on ${output} (git -C ${checkout.dir} diff ${branch} ${output})`
+                  : `✗ could not save train:adopt's output on ${output} in ${checkout.name}`,
+              );
+            }
+            // What the commit left out goes now; nothing of a failed step outlives the commit.
             git(branchCheckout.dir, 'reset', '--quiet', '--hard', 'HEAD');
             git(branchCheckout.dir, 'clean', '--quiet', '-fd');
           } catch (error) {
             dropBranch(checkout, branch);
+            git(checkout.dir, 'branch', '-D', output);
             throw error;
           }
           followers.push({ checkout: branchCheckout, onBranch: true });
-          return !script || keepOutput;
+          return { reason, saved };
         },
       );
-      adoptionBranches.push({ dir: checkout.dir, branch });
+      adoptionBranches.push({ dir: checkout.dir, branch, ...(outcome.saved ? { output } : {}) });
       waiting.push({
         name: checkout.name,
         dir: checkout.dir,
         moving,
-        state: complete ? 'opened' : 'incomplete',
+        state: outcome.reason ? 'incomplete' : 'opened',
         branch,
+        ...(outcome.reason ? { reason: outcome.reason } : {}),
       });
     } catch (error) {
       if (!(error instanceof Abort)) throw error;
@@ -735,6 +873,7 @@ if (command === 'train') {
         if (pendingAdoption(checkout, moving)) continue;
         const { inspection, bumped, staleLock } = bumpRanges(checkout);
         const relocked = bumped || staleLock || releases.some((release) => release.ahead);
+        if (relocked) previewAdoption(checkout, moving);
         try {
           if (relocked) relockAndCheck(checkout);
           if (commitOwned(checkout, inspection.packagePaths, relocked)) committed.add(checkout.dir);
@@ -821,6 +960,7 @@ if (command === 'train') {
       console.log('✓ already on the blessed set');
       continue;
     }
+    previewAdoption(checkout, moving);
     try {
       relockAndCheck(checkout);
       const message =
@@ -892,8 +1032,7 @@ if (command === 'train') {
 
   const why = {
     opened: 'opened this run',
-    incomplete:
-      'opened this run with the re-lock only — train:adopt or the check after it failed, so its output was left out; finish it on the branch',
+    incomplete: 'incomplete',
     unmerged: 'waiting for its branch to merge',
     unpushed: 'committed but never pushed',
     failed: 'the train could not commit it — adopt by hand',
@@ -906,7 +1045,10 @@ if (command === 'train') {
     for (const [name, version] of candidates) {
       const on = waiting
         .filter((entry) => entry.moving.includes(name))
-        .map((entry) => `${entry.name} (${entry.branch ?? why[entry.state]})`);
+        .map(
+          (entry) =>
+            `${entry.name} (${entry.branch ?? why[entry.state]}${entry.state === 'incomplete' ? ', incomplete' : ''})`,
+        );
       console.log(`  ${name}@${version}${on.length === 0 ? '' : ` — waiting on ${on.join(', ')}`}`);
     }
   }
@@ -915,7 +1057,7 @@ if (command === 'train') {
     console.log('pending (merge each adoption branch, then run the train again to bless):');
     for (const entry of waiting) {
       console.log(
-        `  ${entry.name}: ${entry.branch ? `${entry.branch} — ` : ''}${why[entry.state]}`,
+        `  ${entry.name}: ${entry.branch ? `${entry.branch} — ` : ''}${entry.state === 'incomplete' ? `incomplete (${entry.reason}) — finish it on the branch` : why[entry.state]}`,
       );
     }
   }
@@ -1016,7 +1158,11 @@ if (command === 'train') {
   // A repo this run moved (main committed, or a fresh adoption) is on the whole target, so every
   // other train branch in it is superseded.
   const moved = [...new Set([...committed, ...adoptionBranches.map((entry) => entry.dir)])];
-  const keep = new Set(adoptionBranches.map((entry) => `${entry.dir}\0${entry.branch}`));
+  const keep = new Set(
+    adoptionBranches.flatMap((entry) =>
+      [entry.branch, entry.output].flatMap((branch) => (branch ? [`${entry.dir}\0${branch}`] : [])),
+    ),
+  );
   const superseded = (repoDir: string) => {
     const refs = (prefix: string) =>
       git(repoDir, 'for-each-ref', '--format=%(refname:short)', prefix)
@@ -1040,12 +1186,14 @@ if (command === 'train') {
         process.exit(1);
       }
     }
-    for (const { dir: repoDir, branch } of adoptionBranches) {
-      const push = spawnSync('git', ['push', '-u', 'origin', branch], {
-        cwd: repoDir,
-        stdio: 'inherit',
-      });
-      if (push.status !== 0) console.error(`✗ could not push ${branch} in ${repoDir}`);
+    for (const { dir: repoDir, branch, output } of adoptionBranches) {
+      for (const ref of output ? [branch, output] : [branch]) {
+        const push = spawnSync('git', ['push', '-u', 'origin', ref], {
+          cwd: repoDir,
+          stdio: 'inherit',
+        });
+        if (push.status !== 0) console.error(`✗ could not push ${ref} in ${repoDir}`);
+      }
     }
     for (const repoDir of moved) {
       git(repoDir, 'fetch', '--quiet', '--prune', 'origin');
@@ -1066,8 +1214,9 @@ if (command === 'train') {
   } else if (committed.size > 0 || adoptionBranches.length > 0) {
     console.log('train does not push without --push — review its commits, then push:');
     for (const repoDir of committed) console.log(`  git -C ${repoDir} push`);
-    for (const { dir: repoDir, branch } of adoptionBranches) {
+    for (const { dir: repoDir, branch, output } of adoptionBranches) {
       console.log(`  git -C ${repoDir} push -u origin ${branch}`);
+      if (output) console.log(`  git -C ${repoDir} push -u origin ${output}`);
     }
     for (const repoDir of moved) {
       const { local, remote } = superseded(repoDir);

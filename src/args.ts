@@ -15,7 +15,7 @@ const OPTIONS = {
   check: { preset },
   sync: { preset, force: flag, 'no-install': flag },
   scan: { lane },
-  train: { lane, push: flag, 'dry-run': flag },
+  train: { lane, push: flag, 'dry-run': flag, 'adopt-check-timeout': { type: 'string' } },
   ports: {},
   terms: { 'write-baseline': flag },
 } as const;
@@ -29,10 +29,14 @@ export type CommandLine = {
   noInstall: boolean;
   push: boolean;
   dryRun: boolean;
+  /** Seconds the check after `train:adopt` may run before it counts as failed. */
+  adoptCheckTimeout: number;
   writeBaseline: boolean;
 };
 
 export class UsageError extends Error {}
+
+const DEFAULT_ADOPT_CHECK_TIMEOUT = 30 * 60;
 
 const isCommand = (value: string | undefined): value is Command =>
   COMMANDS.includes(value as Command);
@@ -72,6 +76,12 @@ export const parseCommandLine = (argv: string[]): CommandLine => {
   if (typeof laneValue === 'string' && !isLane(laneValue)) {
     throw new UsageError(`unknown lane: ${laneValue}`);
   }
+  const timeoutValue = values['adopt-check-timeout'];
+  const adoptCheckTimeout =
+    typeof timeoutValue === 'string' ? Number(timeoutValue) : DEFAULT_ADOPT_CHECK_TIMEOUT;
+  if (!Number.isInteger(adoptCheckTimeout) || adoptCheckTimeout <= 0) {
+    throw new UsageError(`--adopt-check-timeout takes whole seconds, got ${timeoutValue}`);
+  }
   return {
     command,
     positionals,
@@ -81,6 +91,7 @@ export const parseCommandLine = (argv: string[]): CommandLine => {
     noInstall: values['no-install'] === true,
     push: values.push === true,
     dryRun: values['dry-run'] === true,
+    adoptCheckTimeout,
     writeBaseline: values['write-baseline'] === true,
   };
 };
