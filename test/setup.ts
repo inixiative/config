@@ -7,4 +7,5 @@ import { join } from 'node:path';
 // root per run, removed when the run ends.
 const root = mkdtempSync(join(tmpdir(), 'inixiative-config-test-'));
 process.env.TMPDIR = root;
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+// why: removing every run's temp tree can outlast the default 5 s hook timeout on a loaded machine.
+afterAll(() => rmSync(root, { recursive: true, force: true }), 120_000);
