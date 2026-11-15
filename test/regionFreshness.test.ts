@@ -271,6 +271,59 @@ describe('region freshness: nothing about regions throws or fails', () => {
     expect(run.stderr.toString()).toBe('');
   });
 
+  test('chorus.layers naming a path that does not exist is one warning', () => {
+    const dir = clone('layered');
+    writeFileSync(
+      join(dir, '.foundry/project.json'),
+      JSON.stringify({
+        chorus: { layers: [{ regions: '.foundry/gone/regions' }, { regions: '.foundry/regions' }] },
+      }),
+    );
+    expect(warnings(dir)).toContain(
+      'regions: .foundry/project.json names .foundry/gone/regions as a layer, but it does not exist',
+    );
+  });
+
+  test('an unreadable allow list is a warning in regions', () => {
+    const dir = clone('repo');
+    mkdirSync(join(dir, 'scripts/ci/retired-terms/allow.txt'), { recursive: true });
+    expect(warnings(dir)).toContain(
+      "regions: can't read scripts/ci/retired-terms/allow.txt (EISDIR): no allow entry applies",
+    );
+  });
+
+  test('regions prints exactly one summary line, the one the check built', () => {
+    const stale = join(
+      import.meta.dir,
+      'fixtures',
+      'retired-terms',
+      'fail',
+      'names-in-and-beside-regions',
+    );
+    const run = Bun.spawnSync([
+      process.execPath,
+      join(import.meta.dir, '..', 'src', 'cli.ts'),
+      'regions',
+      stale,
+    ]);
+    const out = run.stdout.toString().split('\n');
+    const summaries = out.filter((line) => line.includes(SUMMARY));
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toContain('naming something retired');
+    const fresh = Bun.spawnSync([
+      process.execPath,
+      join(import.meta.dir, '..', 'src', 'cli.ts'),
+      'regions',
+      join(fixtures, 'old-cut'),
+    ]);
+    expect(
+      fresh.stdout
+        .toString()
+        .split('\n')
+        .filter((line) => line.includes(SUMMARY)),
+    ).toEqual([expect.stringMatching(/^· 1 region in \.foundry\/regions: 1 fresh; /)]);
+  });
+
   test('chorus.layers naming a file is one warning naming it', () => {
     const dir = clone('layered');
     writeFileSync(

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -126,8 +127,91 @@ describe('retired terms: pass', () => {
       '# reason\ndocs/CONVERSATIONS.md\tsignet-may-take\t"(once `floor.mayTake`)"\ndocs/CONVERSATIONS.md\tsignet-grant-reach\t"(`grantReach.ts`)"\ndocs/OTHER.md\tkastle\n',
     );
     expect(errors(dir)).toEqual([
-      `${RETIRED_TERMS_DIR}/allow.txt:4: this allow covers nothing: delete it`,
+      `${RETIRED_TERMS_DIR}/allow.txt:4: this allow covers nothing (no such file): delete it`,
     ]);
+  });
+
+  test('covers nothing says why: never scanned, nothing uses it there, an earlier entry covers it', () => {
+    const dir = clone('pass/history-snippet');
+    writeFileSync(
+      join(dir, RETIRED_TERMS_DIR, 'allow.txt'),
+      '# reason\ndocs/CONVERSATIONS.md\tsignet-may-take\t"(once `floor.mayTake`)"\ndocs/CONVERSATIONS.md\tsignet-grant-reach\t"(`grantReach.ts`)"\ndocs/CONVERSATIONS.md\tsignet-may-take\nnode_modules/x/README.md\tkastle\ndocs/CONVERSATIONS.md\tkastle\n',
+    );
+    expect(errors(dir)).toEqual([
+      `${RETIRED_TERMS_DIR}/allow.txt:4: this allow covers nothing (an earlier entry (line 2) already covers its uses): delete it`,
+      `${RETIRED_TERMS_DIR}/allow.txt:5: this allow covers nothing (its path is never scanned): delete it`,
+      `${RETIRED_TERMS_DIR}/allow.txt:6: this allow covers nothing (nothing there uses kastle): delete it`,
+    ]);
+  });
+
+  test('an allow entry for a region file that covers nothing now is a warning, never an error', () => {
+    const dir = clone('pass/history-snippet');
+    const region = join(dir, '.foundry/regions/rules');
+    mkdirSync(region, { recursive: true });
+    writeFileSync(
+      join(region, 'knowledge.md'),
+      '# Rules\n\nKastle is a retired name, named here on purpose.\n',
+    );
+    writeFileSync(
+      join(dir, '.foundry/regions/GLOSSARY.md'),
+      '# Glossary\n\n**Kastle**: the old name.\n',
+    );
+    writeFileSync(
+      join(dir, RETIRED_TERMS_DIR, 'allow.txt'),
+      `${readFileSync(join(dir, RETIRED_TERMS_DIR, 'allow.txt'), 'utf8')}\n# The rules region names the retired names.\n.foundry/regions/rules/\tkastle\n.foundry/regions/GLOSSARY.md\tkastle\n`,
+    );
+    expect(checkRetiredTerms(dir).findings).toEqual([]);
+    const warns = () =>
+      checkRetiredTerms(dir).findings.map((finding) => `${finding.level} ${finding.message}`);
+    // Rebuilt without the name:
+    writeFileSync(join(region, 'knowledge.md'), '# Rules\n\nNothing retired here now.\n');
+    writeFileSync(join(dir, '.foundry/regions/GLOSSARY.md'), '# Glossary\n');
+    expect(warns()).toEqual([
+      `warn ${RETIRED_TERMS_DIR}/allow.txt:6: this allow covers nothing now (nothing there uses kastle): delete it when you next touch this file`,
+      `warn ${RETIRED_TERMS_DIR}/allow.txt:7: this allow covers nothing now (nothing there uses kastle): delete it when you next touch this file`,
+    ]);
+    // Unreadable:
+    writeFileSync(join(region, 'knowledge.md'), '# Rules\n\nKastle again.\n');
+    if (process.getuid?.() !== 0) {
+      chmodSync(join(dir, '.foundry/regions'), 0o000);
+      try {
+        expect(warns().every((line) => line.startsWith('warn '))).toBe(true);
+        expect(warns()).toHaveLength(2);
+      } finally {
+        chmodSync(join(dir, '.foundry/regions'), 0o755);
+      }
+    }
+  });
+
+  test('an unreadable allow or baseline file is one error naming it, never a throw', () => {
+    const dir = clone('pass/history-snippet');
+    rmSync(join(dir, RETIRED_TERMS_DIR, 'allow.txt'));
+    mkdirSync(join(dir, RETIRED_TERMS_DIR, 'allow.txt'));
+    expect(errors(dir)).toContain(
+      `can't read ${RETIRED_TERMS_DIR}/allow.txt (EISDIR): no allow entry applies`,
+    );
+    mkdirSync(join(dir, RETIRED_TERMS_DIR, 'baseline.txt'));
+    expect(errors(dir)).toContain(
+      `can't read ${RETIRED_TERMS_DIR}/baseline.txt (EISDIR): fix or delete it`,
+    );
+    expect(writeRetiredTermsBaseline(dir).refused).toEqual([
+      `can't read ${RETIRED_TERMS_DIR}/baseline.txt (EISDIR): fix or delete it`,
+    ]);
+  });
+
+  test('identical lines no snippet can tell apart get advice the author can follow', () => {
+    const dir = clone('pass/history-snippet');
+    const doc = join(dir, 'docs/CONVERSATIONS.md');
+    const line = 'A member has `member.take` (once `floor.mayTake`).';
+    writeFileSync(
+      doc,
+      `# Conversations\n\n${line}\n\n${line}\n\nThis replaced the reach check on the host (\`grantReach.ts\`).\n`,
+    );
+    expect(errors(dir)).toContainEqual(
+      expect.stringContaining(
+        'the snippet "(once `floor.mayTake`)" is on 2 identical lines of docs/CONVERSATIONS.md, so no snippet can name one: make the lines differ, allow the file with <path>\\t<term> if it is history as a whole, or baseline them',
+      ),
+    );
   });
 
   test('a snippet on more than one line of its file fails: lengthen it so it names one', () => {

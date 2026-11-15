@@ -105,30 +105,35 @@ const readObject = (abs: string): Read<Record<string, unknown>> => {
  * (`region-roster.ts` `chorusLayers`): `chorus.layers` as written, else the one `chorus.regions`
  * names, else `.foundry/regions`. Directories outside the repo are not its files.
  */
-const layerDirs = (root: string, problems: string[]): string[] => {
+const layerDirs = (root: string, problems: string[]): { dir: string; named: boolean }[] => {
   const read = readObject(join(root, PROJECT_SETTINGS));
   if ('error' in read)
     problems.push(`can't read ${PROJECT_SETTINGS} (${read.error}): read ${OWN_REGIONS_DIR} only`);
   const chorus = 'ok' in read && isObject(read.ok.chorus) ? read.ok.chorus : {};
-  const named = Array.isArray(chorus.layers)
+  const listed = Array.isArray(chorus.layers)
     ? chorus.layers.flatMap((layer) =>
         isObject(layer) && typeof layer.regions === 'string' ? [layer.regions] : [],
       )
-    : [typeof chorus.regions === 'string' ? chorus.regions : OWN_REGIONS_DIR];
-  const dirs = named
+    : typeof chorus.regions === 'string'
+      ? [chorus.regions]
+      : [];
+  const named = listed.length > 0 || Array.isArray(chorus.layers);
+  const dirs = (named ? listed : [OWN_REGIONS_DIR])
     .map((dir) => relative(root, isAbsolute(dir) ? resolve(dir) : resolve(root, dir)))
     .filter((dir) => dir !== '' && !dir.startsWith('..'));
-  return [...new Set(dirs)];
+  return [...new Set(dirs)].map((dir) => ({ dir, named }));
 };
 
 /** Region directories under `dir` (each holding a `region.json`), sorted; what can't be read is a problem. */
-const regionIds = (root: string, dir: string, problems: string[]): string[] => {
+const regionIds = (root: string, dir: string, named: boolean, problems: string[]): string[] => {
   let entries: Dirent[];
   try {
     entries = readdirSync(join(root, dir), { withFileTypes: true });
   } catch (error) {
     const code = failure(error);
-    if (code !== 'ENOENT')
+    if (code === 'ENOENT' && named)
+      problems.push(`${PROJECT_SETTINGS} names ${dir} as a layer, but it does not exist`);
+    else if (code !== 'ENOENT')
       problems.push(
         code === 'ENOTDIR'
           ? `${dir} is not a directory: no regions read there`
@@ -377,7 +382,7 @@ const REGIONS_SEEN =
   "compared with the docs: part 4a only; the rest of each region (parts 1–3, part 4b's code entries, recognise.md, region.json) and the set's GLOSSARY.md and registry.json are only scanned for retired names; doc sections no region copies are not seen";
 
 /** One line: how many regions are in each state. */
-export const summariseRegions = (regions: RegionFreshness[], naming = 0): string => {
+const summariseRegions = (regions: RegionFreshness[], naming = 0): string => {
   const order: RegionStatus[] = [
     'fresh',
     'partly checked',
@@ -400,8 +405,8 @@ const scanRegionFreshness = (root: string) => {
   const regions: RegionFreshness[] = [];
   const problems: string[] = [];
   const docs: DocCache = new Map();
-  for (const dir of layerDirs(root, problems)) {
-    const ids = regionIds(root, dir, problems);
+  for (const { dir, named } of layerDirs(root, problems)) {
+    const ids = regionIds(root, dir, named, problems);
     if (ids.length === 0) continue;
     const registryRead = readObject(join(root, dir, 'registry.json'));
     if ('error' in registryRead)
@@ -423,6 +428,8 @@ export type RegionFreshnessResult = {
   findings: Finding[];
   layers: RegionLayer[];
   regions: RegionFreshness[];
+  /** The one summary line (also the last finding when there are any). */
+  summary?: string;
 };
 
 /**
@@ -434,16 +441,17 @@ export type RegionFreshnessResult = {
  */
 export const checkRegionFreshness = (
   root: string,
-  retiredHits: RetiredTermHit[] = regionRetiredHits(root),
+  retired: { hits: RetiredTermHit[]; problems: string[] } = regionRetiredHits(root),
 ): RegionFreshnessResult => {
   const { layers, regions, problems } = scanRegionFreshness(root);
+  problems.push(...retired.problems);
   const findings: Finding[] = [];
   const warn = (message: string) => findings.push({ level: 'warn', message });
   for (const problem of problems) warn(`regions: ${problem}`);
   for (const region of regions)
     if (['gone', 'stale', 'unverifiable'].includes(region.status)) warn(describeRegion(region));
-  const retired = regionHitGroups(retiredHits);
-  for (const group of retired) warn(group.message);
+  const groups = regionHitGroups(retired.hits);
+  for (const group of groups) warn(group.message);
   for (const layer of layers.filter((layer) => !layer.own))
     warn(
       `${layer.dir}: ${layer.regions} region${layer.regions === 1 ? '' : 's'} built from ${layer.project ? `${layer.project}'s` : 'another repo’s'} docs, not checked here`,
@@ -456,8 +464,9 @@ export const checkRegionFreshness = (
       `${elsewhere.length} doc unit${elsewhere.length === 1 ? '' : 's'} in ${OWN_REGIONS_DIR} copy other repos' docs (${[...new Set(elsewhere)].sort().join(', ')}), not checked here`,
     );
   const naming = new Set(
-    retired.flatMap((group) => (group.dir === OWN_REGIONS_DIR && group.region ? [group.key] : [])),
+    groups.flatMap((group) => (group.dir === OWN_REGIONS_DIR && group.region ? [group.key] : [])),
   ).size;
-  if (findings.length > 0 && regions.length > 0) warn(summariseRegions(regions, naming));
-  return { findings, layers, regions };
+  const summary = regions.length > 0 ? summariseRegions(regions, naming) : undefined;
+  if (summary && findings.length > 0) warn(summary);
+  return { findings, layers, regions, summary };
 };

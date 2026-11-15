@@ -182,6 +182,9 @@ const walk = (root: string, dir = '', out: string[] = []): string[] => {
   return out;
 };
 
+const errorCode = (error: unknown): string =>
+  (error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : String(error));
+
 /** A regular file's text; a symlink, directory or vanished path reads as nothing. */
 const readText = (abs: string): string | null => {
   try {
@@ -321,14 +324,26 @@ type AllowRule = { line: number; path: string; term: RetiredTerm; snippet?: stri
 const ALLOW_FORMS = '<term>, <path>\\t<term> or <path>\\t<term>\\t"<snippet>"';
 const GLOB = /[*?[\]{}]/;
 
-const parseAllow = (root: string): { rules: AllowRule[]; problems: string[] } => {
+const parseAllow = (
+  root: string,
+): { rules: AllowRule[]; problems: string[]; unreadable?: string } => {
   const abs = join(root, ALLOW_FILE);
   const rules: AllowRule[] = [];
   const problems: string[] = [];
   if (!existsSync(abs)) return { rules, problems };
+  let body: string;
+  try {
+    body = readFileSync(abs, 'utf8');
+  } catch (error) {
+    return {
+      rules,
+      problems,
+      unreadable: `can't read ${ALLOW_FILE} (${errorCode(error)}): no allow entry applies`,
+    };
+  }
   const ids = new Map(RETIRED_TERMS.map((term) => [term.id, term]));
   let reasoned = false;
-  for (const [index, raw] of readFileSync(abs, 'utf8').split('\n').entries()) {
+  for (const [index, raw] of body.split('\n').entries()) {
     const line = raw.replace(/\r$/, '');
     if (line.trim() === '') {
       reasoned = false;
@@ -388,11 +403,12 @@ const parseAllow = (root: string): { rules: AllowRule[]; problems: string[] } =>
       continue;
     }
     const text = readText(join(root, path));
-    const lines =
-      text === null ? 0 : text.split('\n').filter((entry) => entry.includes(snippet)).length;
-    if (lines > 1) {
+    const lines = text === null ? [] : text.split('\n').filter((entry) => entry.includes(snippet));
+    if (lines.length > 1) {
       wrong(
-        `the snippet "${snippet}" is on ${lines} lines of ${path}: lengthen it so it names one`,
+        new Set(lines.map((entry) => entry.trim())).size === 1
+          ? `the snippet "${snippet}" is on ${lines.length} identical lines of ${path}, so no snippet can name one: make the lines differ, allow the file with <path>\\t<term> if it is history as a whole, or baseline them`
+          : `the snippet "${snippet}" is on ${lines.length} lines of ${path}: lengthen it so it names one`,
       );
       continue;
     }
@@ -429,22 +445,65 @@ const allow = (rules: AllowRule[], hit: RetiredTermHit): boolean => {
   return rule !== undefined;
 };
 
-/** Every use, split into docs (this rule's) and generated regions (the regions rule's), after the allow list. */
+const REGIONS_PATH = /^\.foundry\/(?:[^/]+\/)*regions(?:\/|$)/;
+
+/** Why an allow entry covers nothing, when that can be told. */
+const whyUnused = (root: string, rule: AllowRule, rules: AllowRule[], hits: RetiredTermHit[]) => {
+  const alone = hits.some((hit) => allow([{ ...rule, used: false }], hit));
+  if (alone) {
+    const earlier = rules.find(
+      (entry) => entry !== rule && entry.used && entry.term.id === rule.term.id,
+    );
+    return `an earlier entry${earlier ? ` (line ${earlier.line})` : ''} already covers its uses`;
+  }
+  if (rule.path === '') return `nothing anywhere uses ${rule.term.id}`;
+  if (SKIPPED.test(rule.path) || rule.path.startsWith(`${RETIRED_TERMS_DIR}/`))
+    return 'its path is never scanned';
+  if (!rule.path.endsWith('/') && !existsSync(join(root, rule.path))) return 'no such file';
+  return `nothing there uses ${rule.term.id}`;
+};
+
+/**
+ * Every use, split into docs (this rule's) and generated regions (the regions rule's), after the
+ * allow list; and what is wrong with the allow list. An entry that covers nothing is an error,
+ * unless its path is a region file or under a regions directory: a rebuilt region drops a name
+ * nobody edited, so that is a warning.
+ */
 const classify = (root: string) => {
-  const { rules, problems } = parseAllow(root);
+  const { rules, problems, unreadable } = parseAllow(root);
   const docs: RetiredTermHit[] = [];
   const regions: RetiredTermHit[] = [];
-  for (const hit of scanRetiredTerms(root)) {
+  const all = scanRetiredTerms(root);
+  for (const hit of all) {
     if (allow(rules, hit)) continue;
     (regionFileOf(hit.path) ? regions : docs).push(hit);
   }
-  for (const rule of rules.filter((entry) => !entry.used))
-    problems.push(`${ALLOW_FILE}:${rule.line}: this allow covers nothing: delete it`);
-  return { docs, regions, problems };
+  const findings: Finding[] = [
+    ...(unreadable ? [{ level: 'error' as const, message: unreadable }] : []),
+    ...problems.map((message) => ({ level: 'error' as const, message })),
+  ];
+  for (const rule of rules.filter((entry) => !entry.used)) {
+    const why = whyUnused(root, rule, rules, all);
+    findings.push(
+      REGIONS_PATH.test(rule.path)
+        ? {
+            level: 'warn',
+            message: `${ALLOW_FILE}:${rule.line}: this allow covers nothing now (${why}): delete it when you next touch this file`,
+          }
+        : {
+            level: 'error',
+            message: `${ALLOW_FILE}:${rule.line}: this allow covers nothing (${why}): delete it`,
+          },
+    );
+  }
+  return { docs, regions, findings, unreadable };
 };
 
-/** Retired names in generated region files that no allow entry covers. */
-export const regionRetiredHits = (root: string): RetiredTermHit[] => classify(root).regions;
+/** Retired names in generated region files that no allow entry covers, and an allow list that can't be read. */
+export const regionRetiredHits = (root: string): { hits: RetiredTermHit[]; problems: string[] } => {
+  const { regions, unreadable } = classify(root);
+  return { hits: regions, problems: unreadable ? [unreadable] : [] };
+};
 
 const countByKey = (hits: RetiredTermHit[]): Map<string, number> => {
   const counts = new Map<string, number>();
@@ -461,7 +520,13 @@ const readBaseline = (root: string) => {
   const counts = new Map<string, number>();
   const malformed: string[] = [];
   const abs = join(root, BASELINE_FILE);
-  const text = existsSync(abs) ? readFileSync(abs, 'utf8') : '';
+  let text = '';
+  let unreadable: string | undefined;
+  try {
+    if (existsSync(abs)) text = readFileSync(abs, 'utf8');
+  } catch (error) {
+    unreadable = `can't read ${BASELINE_FILE} (${errorCode(error)}): fix or delete it`;
+  }
   for (const line of text.split('\n').map((entry) => entry.trimEnd())) {
     if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
     const match = BASELINE_LINE.exec(line);
@@ -471,6 +536,7 @@ const readBaseline = (root: string) => {
   const terms = /^# terms: (.*)$/m.exec(text);
   return {
     exists: existsSync(abs),
+    unreadable,
     counts,
     malformed,
     // A baseline without the line was written by the release whose list was FIRST_TERMS.
@@ -505,11 +571,12 @@ export type RetiredTermsResult = {
  * rule's (warnings).
  */
 export const checkRetiredTerms = (root: string): RetiredTermsResult => {
-  const { docs: hits, regions: regionHits, problems } = classify(root);
+  const { docs: hits, regions: regionHits, findings: allowFindings } = classify(root);
   const counts = countByKey(hits);
   const baseline = readBaseline(root);
   const findings: Finding[] = [
-    ...problems.map((message) => ({ level: 'error' as const, message })),
+    ...allowFindings,
+    ...(baseline.unreadable ? [{ level: 'error' as const, message: baseline.unreadable }] : []),
     ...baseline.malformed.map((line) => ({
       level: 'error' as const,
       message: `${BASELINE_FILE}: "${line}" is not <path>\\t<term>\\t<count> → rewrite it with terms --write-baseline`,
@@ -560,6 +627,7 @@ export const writeRetiredTermsBaseline = (root: string): { written: number; refu
   const counts = countByKey(classify(root).docs);
   const path = join(root, BASELINE_FILE);
   const baseline = readBaseline(root);
+  if (baseline.unreadable) return { written: 0, refused: [baseline.unreadable] };
   if (baseline.exists) {
     const refused = [...counts]
       .filter(

@@ -40,7 +40,7 @@ import {
   writeManifest,
 } from './lib';
 import { type Project, portsFor, projects } from './ports';
-import { checkRegionFreshness, describeRegion, summariseRegions } from './regionFreshness';
+import { checkRegionFreshness, describeRegion } from './regionFreshness';
 import { checkRetiredTerms, writeRetiredTermsBaseline } from './retiredTerms';
 
 let commandLine: CommandLine;
@@ -143,7 +143,7 @@ const offDefaultBranch = (cwd: string): { branch: string; main: string } | null 
 if (command === 'check') {
   const { findings } = inspect(dir, manifest, presetFlag);
   const terms = checkRetiredTerms(dir);
-  const regions = checkRegionFreshness(dir, terms.regionHits);
+  const regions = checkRegionFreshness(dir, { hits: terms.regionHits, problems: [] });
   process.exit(report([...findings, ...terms.findings, ...regions.findings]) > 0 ? 1 : 0);
 }
 
@@ -162,11 +162,10 @@ if (command === 'terms') {
 }
 
 if (command === 'regions') {
-  const { findings, regions } = checkRegionFreshness(dir);
+  const { findings, regions, summary } = checkRegionFreshness(dir);
   for (const region of regions)
     if (['fresh', 'partly checked', 'not checked'].includes(region.status))
       console.log(`${region.status === 'fresh' ? '✓' : '·'} ${describeRegion(region)}`);
-  const summary = regions.length > 0 ? summariseRegions(regions) : null;
   if (summary && !findings.some((finding) => finding.message === summary))
     console.log(`· ${summary}`);
   process.exit(report(findings) > 0 ? 1 : 0);
