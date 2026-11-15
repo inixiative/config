@@ -175,3 +175,37 @@ export const demote = (text: string): string => {
 /** The line part 4 puts above each unit. */
 export const sourceLine = (unit: DocUnit): string =>
   `**Source:** \`${unit.path}\` § ${unit.heading} (in "${unit.h1}")`;
+
+const PART_4A = '\n### 4a. Doc sections\n';
+const PART_4B = '\n### 4b. Code entries\n';
+const UNIT_MARKER = /^<!-- unit (\S+) -->$/gm;
+
+export const trimNewlines = (text: string): string => text.replace(/^\n+|\n+$/g, '');
+
+/** Part 4a's copies (assemble.py's layout), in order: each unit's id, its span in `knowledge`, and its body (source line and section). */
+export const unitCopies = (
+  knowledge: string,
+): { unit: string; start: number; end: number; body: string }[] | null => {
+  const start = knowledge.indexOf(PART_4A);
+  if (start === -1) return null;
+  const from = start + PART_4A.length;
+  const last = knowledge.lastIndexOf(PART_4B);
+  const to = last > start ? last : knowledge.length;
+  const markers = [...knowledge.slice(from, to).matchAll(UNIT_MARKER)];
+  return markers.map((marker, index) => {
+    const end = from + (markers[index + 1]?.index ?? to - from);
+    const bodyStart = from + marker.index + marker[0].length;
+    return {
+      unit: marker[1],
+      start: from + marker.index,
+      end,
+      body: trimNewlines(knowledge.slice(bodyStart, end)),
+    };
+  });
+};
+
+/** The doc a unit id names: `doc:<path>#<anchor>`. */
+export const unitPath = (unit: string): string | null => {
+  const hash = unit.indexOf('#');
+  return unit.startsWith('doc:') && hash > 4 ? unit.slice(4, hash) : null;
+};

@@ -54,15 +54,6 @@ describe('retired terms: pass', () => {
     expect(checkRetiredTerms(dir).findings).toEqual([]);
   });
 
-  test('a stale copy of an allowed section carrying a retired name fails', () => {
-    const dir = clone('pass/allowed-copy');
-    const doc = join(dir, 'docs/history/0.12.md');
-    writeFileSync(doc, readFileSync(doc, 'utf8').replace('The 0.12 grant', 'The old grant'));
-    expect(errors(dir)).toEqual([
-      expect.stringContaining('retired names in region .foundry/regions/conv: "threadsTerms"'),
-    ]);
-  });
-
   test('a snippet entry allows one history mention, wherever its line moves, and nothing else in the file', () => {
     const dir = clone('pass/history-snippet');
     expect(checkRetiredTerms(dir).findings).toEqual([]);
@@ -78,15 +69,35 @@ describe('retired terms: pass', () => {
     ]);
   });
 
-  test('an allow line with a third field that is not a quoted snippet fails', () => {
+  test('a malformed allow line fails with its line number and the forms it can take', () => {
+    const dir = clone('pass/history-snippet');
+    const allow = (body: string) => {
+      writeFileSync(join(dir, RETIRED_TERMS_DIR, 'allow.txt'), body);
+      return errors(dir).filter((message) => message.includes('allow.txt'));
+    };
+    const forms =
+      '→ write <term>, <path>\\t<term> or <path>\\t<term>\\t"<snippet>" (tab-separated)';
+    expect(allow('# reason\ndocs/CONVERSATIONS.md\tsignet-may-take\tonce\n')).toEqual([
+      `${RETIRED_TERMS_DIR}/allow.txt:2: the snippet once is not in double quotes ${forms}`,
+    ]);
+    expect(allow('docs/CONVERSATIONS.md signet-may-take\n')).toEqual([
+      `${RETIRED_TERMS_DIR}/allow.txt:1: "docs/CONVERSATIONS.md signet-may-take" is not an allow entry (its fields are not tab-separated) ${forms}`,
+    ]);
+    expect(allow('docs/CONVERSATIONS.md\tsignet-maytake\n')).toEqual([
+      expect.stringMatching(/allow\.txt:1: "signet-maytake" is not a retired term \(kastle, /),
+    ]);
+    expect(allow('docs/CONVERSATIONS.md\tsignet-may-take\t"e"\n')).toEqual([
+      `${RETIRED_TERMS_DIR}/allow.txt:1: the snippet "e" does not contain signet-may-take ${forms}`,
+    ]);
+  });
+
+  test('a snippet covers only the use it quotes, not another use on the same line', () => {
     const dir = clone('pass/history-snippet');
     writeFileSync(
-      join(dir, RETIRED_TERMS_DIR, 'allow.txt'),
-      'docs/CONVERSATIONS.md\tsignet-may-take\tonce\n',
+      join(dir, 'docs/CONVERSATIONS.md'),
+      'A member has `member.take` (once `floor.mayTake`); `floor.mayTake` still gates it.\n',
     );
-    expect(errors(dir)).toContainEqual(
-      expect.stringContaining('allow.txt: "docs/CONVERSATIONS.md\tsignet-may-take\tonce" is not'),
-    );
+    expect(errors(dir)).toEqual([expect.stringMatching(/CONVERSATIONS\.md:1: "floor\.mayTake"/)]);
   });
 
   test('baselined uses warn, never fail', () => {
@@ -133,23 +144,16 @@ describe('retired terms: fail', () => {
     ]);
   });
 
-  test('a removed name in a generated region says rebuild it, never which line to edit', () => {
-    const found = errors('fail/stale-region');
-    expect(found).toEqual([
+  test('a removed name in a generated region never fails terms: the regions rule warns about it', () => {
+    expect(errors('fail/stale-region')).toEqual([
       'retired term in .foundry/regions/README.md:3: "Kastle" (kastle) → Kingdom, owner, integration or Signet',
       'retired term in .foundry/warden-brief.md:3: "mayTake" (signet-may-take) → the member.take conversation permission (signet 0.18.0)',
-      expect.stringMatching(
-        /^retired names in region \.foundry\/base\/regions\/locks: "`threads` resource" \(knowledge\.md ×1\) → rebuild region locks in the repo whose docs \.foundry\/base\/regions was built from, then copy it here \(generated from the docs: never edit it by hand/,
-      ),
-      expect.stringMatching(
-        /^retired names in \.foundry\/regions \(the set's own files\): "floor\.mayTake" \(GLOSSARY\.md ×1\) → rebuild the regions in \.foundry\/regions \(/,
-      ),
-      expect.stringMatching(
-        /^retired names in region \.foundry\/regions\/conv: "threadsTerms", "narrowsThreadsTerms" \(knowledge\.md ×3, region\.json ×1\) → rebuild region conv \(generated from the docs: never edit it by hand; fix any source doc that still says this first\)\. Today: signet-grant-terms: conversation permissions/,
-      ),
     ]);
-    for (const message of found.filter((line) => line.startsWith('retired names')))
-      expect(message).not.toMatch(/\.md:\d|\.json:\d/);
+    expect(
+      scanRetiredTerms(join(fixtures, 'fail/stale-region')).filter((hit) =>
+        hit.path.includes('regions/'),
+      ).length,
+    ).toBeGreaterThan(2);
   });
 
   test('a marketing word in a generated region is not checked there; a removed concept is', () => {

@@ -1,6 +1,5 @@
 import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import { compareBaseline, readBaseline, writeBaseline } from './baseline';
 import {
   cutDocUnits,
   type DocUnit,
@@ -8,25 +7,24 @@ import {
   normaliseNewlines,
   sourceLine,
   stripDoNotCopy,
+  trimNewlines,
+  unitCopies,
+  unitPath,
 } from './docUnits';
 import type { Finding } from './lib';
+import { regionHitGroups, regionRetiredHits } from './retiredTerms';
 
 /**
  * Region freshness: a Warden region's part 4 holds the doc sections it was built from, verbatim
  * (`region.json` `sources.docUnits`). Re-cut each one from the repo's doc today, with the builder's
- * own rule (`docUnits.ts`), and compare. A copy that differs is stale, a warning: the region still
- * points at things that exist, and a rebuild needs the builder. A unit whose file or heading is
- * gone fails: the region describes a section that no longer exists.
+ * own rule (`docUnits.ts`), and compare. A copy that differs is stale: the region still
+ * points at things that exist. A unit whose file or heading is gone, and a retired name inside a
+ * region, are warnings too: only the machine that holds the builder can rebuild a region.
  */
 
 /** Where the builder installs a repo's own regions, and Foundry's default chorus layer. */
 export const OWN_REGIONS_DIR = '.foundry/regions';
 const PROJECT_SETTINGS = '.foundry/project.json';
-export const REGION_FRESHNESS_DIR = 'scripts/ci/region-freshness';
-const BASELINE_FILE = `${REGION_FRESHNESS_DIR}/baseline.txt`;
-const PART_4A = '\n### 4a. Doc sections\n';
-const PART_4B = '\n### 4b. Code entries\n';
-const UNIT_MARKER = /^<!-- unit (\S+) -->$/gm;
 
 export type UnitState =
   | { unit: string; state: 'fresh' }
@@ -131,36 +129,6 @@ const librariesOf = (registry: Record<string, unknown> | null): string[] => {
 const libraryOf = (path: string, libraries: string[]): string | undefined => {
   const unscoped = path.startsWith('@') ? path.slice(path.indexOf('/') + 1) : path;
   return libraries.find((name) => path.startsWith(`${name}/`) || unscoped.startsWith(`${name}/`));
-};
-
-const trimNewlines = (text: string): string => text.replace(/^\n+|\n+$/g, '');
-
-/** Part 4a's copies, in order: each unit's id, its span in `knowledge`, and its body (source line and section). */
-export const unitCopies = (
-  knowledge: string,
-): { unit: string; start: number; end: number; body: string }[] | null => {
-  const start = knowledge.indexOf(PART_4A);
-  if (start === -1) return null;
-  const from = start + PART_4A.length;
-  const last = knowledge.lastIndexOf(PART_4B);
-  const to = last > start ? last : knowledge.length;
-  const markers = [...knowledge.slice(from, to).matchAll(UNIT_MARKER)];
-  return markers.map((marker, index) => {
-    const end = from + (markers[index + 1]?.index ?? to - from);
-    const bodyStart = from + marker.index + marker[0].length;
-    return {
-      unit: marker[1],
-      start: from + marker.index,
-      end,
-      body: trimNewlines(knowledge.slice(bodyStart, end)),
-    };
-  });
-};
-
-/** The doc a unit id names: `doc:<path>#<anchor>`. */
-export const unitPath = (unit: string): string | null => {
-  const hash = unit.indexOf('#');
-  return unit.startsWith('doc:') && hash > 4 ? unit.slice(4, hash) : null;
 };
 
 /** Part 4a's copies by unit id: the source line above each, and the section as shown. */
@@ -301,12 +269,6 @@ const checkRegion = (
   return { path, id, status, units };
 };
 
-export type RegionFreshnessResult = {
-  findings: Finding[];
-  layers: RegionLayer[];
-  regions: RegionFreshness[];
-};
-
 const describeUnit = (unit: UnitState): string => {
   switch (unit.state) {
     case 'changed':
@@ -363,7 +325,7 @@ export const REGIONS_NOT_SEEN =
   'not seen by this check: code entries (part 4b), the model-written parts 1–3, recognise.md, GLOSSARY.md, and doc sections no region copies';
 
 /** One line: how many regions are in each state. */
-export const summariseRegions = (regions: RegionFreshness[]): string => {
+export const summariseRegions = (regions: RegionFreshness[], naming = 0): string => {
   const order: RegionStatus[] = [
     'fresh',
     'partly checked',
@@ -376,6 +338,7 @@ export const summariseRegions = (regions: RegionFreshness[]): string => {
     .map((status) => [status, regions.filter((region) => region.status === status).length] as const)
     .filter(([, n]) => n > 0)
     .map(([status, n]) => `${n} ${status}`);
+  if (naming > 0) counts.push(`${naming} naming something retired`);
   return `${regions.length} region${regions.length === 1 ? '' : 's'} in ${OWN_REGIONS_DIR}: ${counts.join(', ')}; ${REGIONS_NOT_SEEN}`;
 };
 
@@ -398,95 +361,40 @@ export const scanRegionFreshness = (root: string): Omit<RegionFreshnessResult, '
   return { layers, regions };
 };
 
-/** `<region path>\t<unit id>` for every unit the check found fresh. */
-export const freshUnits = (regions: RegionFreshness[]): Set<string> =>
-  new Set(
-    regions.flatMap((region) =>
-      region.units.flatMap((unit) =>
-        unit.state === 'fresh' ? [`${region.path}\t${unit.unit}`] : [],
-      ),
-    ),
-  );
-
-const goneCounts = (regions: RegionFreshness[]): Map<string, number> => {
-  const counts = new Map<string, number>();
-  for (const region of regions) {
-    const gone = outOf(region, 'gone').length;
-    if (gone > 0) counts.set(region.path, gone);
-  }
-  return counts;
+export type RegionFreshnessResult = {
+  findings: Finding[];
+  layers: RegionLayer[];
+  regions: RegionFreshness[];
 };
 
 /**
- * Fails on a region that copies a section whose file or heading is gone, unless the baseline
- * covers it (`<region path>\t<units gone>`, shrink-only). A stale region (a copy that differs), a
- * region that can't be read as a built one, a layer built from another repo and units copied
- * from another repo are warnings.
+ * Every finding about regions is a warning: a region is rebuilt only where the builder runs, so a
+ * repo's CI never fails on one. A stale copy, a gone section and a retired name each say to
+ * rebuild the region; another repo's layer and units copied from another repo's docs are named
+ * once; the summary counts the regions in each state.
  */
 export const checkRegionFreshness = (root: string): RegionFreshnessResult => {
   const { layers, regions } = scanRegionFreshness(root);
-  const { counts: baseline, malformed } = readBaseline(root, BASELINE_FILE, 1);
-  const findings: Finding[] = malformed.map((line) => ({
-    level: 'error',
-    message: `${BASELINE_FILE}: "${line}" is not <region path>\\t<units gone> → rewrite it with regions --write-baseline`,
-  }));
-  const counts = goneCounts(regions);
-  const { over, under, covered } = compareBaseline(counts, baseline);
-  const failing = new Set(over.map(({ key }) => key));
-  for (const region of regions) {
-    if (failing.has(region.path))
-      findings.push({ level: 'error', message: describeRegion(region) });
-    else if (['gone', 'stale', 'unverifiable'].includes(region.status))
-      findings.push({ level: 'warn', message: describeRegion(region) });
-  }
-  for (const { key, count, known } of under) {
-    findings.push({
-      level: 'error',
-      message:
-        count === 0
-          ? `${BASELINE_FILE}: ${key} copies no gone section now → delete its line`
-          : `${BASELINE_FILE}: ${key} copies ${count} gone section${count === 1 ? '' : 's'} now, not ${known} → lower its count`,
-    });
-  }
-  for (const layer of layers.filter((layer) => !layer.own)) {
-    findings.push({
-      level: 'warn',
-      message: `${layer.dir}: ${layer.regions} region${layer.regions === 1 ? '' : 's'} built from ${layer.project ? `${layer.project}'s` : 'another repo’s'} docs, not checked here`,
-    });
-  }
+  const findings: Finding[] = [];
+  const warn = (message: string) => findings.push({ level: 'warn', message });
+  for (const region of regions)
+    if (['gone', 'stale', 'unverifiable'].includes(region.status)) warn(describeRegion(region));
+  const retired = regionHitGroups(regionRetiredHits(root));
+  for (const group of retired) warn(group.message);
+  for (const layer of layers.filter((layer) => !layer.own))
+    warn(
+      `${layer.dir}: ${layer.regions} region${layer.regions === 1 ? '' : 's'} built from ${layer.project ? `${layer.project}'s` : 'another repo’s'} docs, not checked here`,
+    );
   const elsewhere = regions.flatMap((region) =>
     region.units.flatMap((unit) => (unit.state === 'elsewhere' ? [unit.library] : [])),
   );
-  if (elsewhere.length > 0) {
-    findings.push({
-      level: 'warn',
-      message: `${elsewhere.length} doc unit${elsewhere.length === 1 ? '' : 's'} in ${OWN_REGIONS_DIR} copy other repos' docs (${[...new Set(elsewhere)].sort().join(', ')}), not checked here`,
-    });
-  }
-  const baselined = [...counts.keys()].filter(
-    (key) => !failing.has(key) && (baseline.get(key) ?? 0) > 0,
-  ).length;
-  if (covered > 0) {
-    findings.push({
-      level: 'warn',
-      message: `${baselined} region${baselined === 1 ? '' : 's'} with gone sections in ${BASELINE_FILE} (not blocking; rebuild ${baselined === 1 ? 'it' : 'them'} and shrink the baseline)`,
-    });
-  }
-  if (findings.length > 0 && regions.length > 0)
-    findings.push({ level: 'warn', message: summariseRegions(regions) });
+  if (elsewhere.length > 0)
+    warn(
+      `${elsewhere.length} doc unit${elsewhere.length === 1 ? '' : 's'} in ${OWN_REGIONS_DIR} copy other repos' docs (${[...new Set(elsewhere)].sort().join(', ')}), not checked here`,
+    );
+  const naming = new Set(
+    retired.flatMap((group) => (group.dir === OWN_REGIONS_DIR && group.region ? [group.key] : [])),
+  ).size;
+  if (findings.length > 0 && regions.length > 0) warn(summariseRegions(regions, naming));
   return { findings, layers, regions };
 };
-
-/** Writes the baseline from today's regions with gone sections: when there is none yet, or only to shrink it. */
-export const writeRegionFreshnessBaseline = (
-  root: string,
-): { written: number; refused: string[] } =>
-  writeBaseline(root, BASELINE_FILE, {
-    counts: goneCounts(scanRegionFreshness(root).regions),
-    keyFields: 1,
-    header: [
-      '# Warden regions copying doc sections that are gone, waiting for a rebuild: reported, not failed (@inixiative/config check).',
-      '# One per line: <region path>\\t<units gone>. Rebuild the region and lower or delete its line.',
-      '# Rewrite after rebuilding: inixiative-config regions --write-baseline (it refuses to grow).',
-    ],
-  });

@@ -18,7 +18,7 @@ const OPTIONS = {
   train: { lane, push: flag, 'dry-run': flag, 'adopt-check-timeout': { type: 'string' } },
   ports: {},
   terms: { 'write-baseline': flag },
-  regions: { 'write-baseline': flag },
+  regions: {},
 } as const;
 
 export type CommandLine = {

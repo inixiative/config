@@ -1,23 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCommandLine, UsageError } from '../src/args';
 import { cutDocUnits, slug, stripDoNotCopy } from '../src/docUnits';
-import {
-  checkRegionFreshness,
-  describeRegion,
-  REGION_FRESHNESS_DIR,
-  writeRegionFreshnessBaseline,
-} from '../src/regionFreshness';
+import { checkRegionFreshness, describeRegion } from '../src/regionFreshness';
 
 // The region fixtures were written with the region builder's own units.py and assemble.py, so
 // they are what the builder installs, not what this port expects.
@@ -117,14 +104,15 @@ describe('region freshness: stale is a warning', () => {
   });
 });
 
-describe('region freshness: gone fails', () => {
-  test('a renamed heading leaves the unit with no section today: an error', () => {
+describe('region freshness: gone is a warning too', () => {
+  test('a renamed heading leaves the unit with no section today: rebuild it, but nothing fails', () => {
     const dir = clone('repo');
     edit(dir, 'README.md', '## Errors', '## Failures');
     expect(statuses(dir).widgets).toBe('gone');
-    expect(messages(dir, 'error')).toEqual([
+    expect(messages(dir, 'error')).toEqual([]);
+    expect(messages(dir, 'warn')).toContain(
       `region .foundry/regions/widgets copies sections that are gone: doc:README.md#errors gone (no such section today) → ${REBUILD('widgets')}`,
-    ]);
+    );
   });
 
   test('a missing doc file leaves the unit with no file; the other repo’s unit is still not checked', () => {
@@ -135,9 +123,46 @@ describe('region freshness: gone fails', () => {
       { unit: 'doc:docs/guide.md#locks', state: 'gone', missing: 'file' },
       { unit: 'doc:lib/README.md#install', state: 'elsewhere', library: 'lib' },
     ]);
-    expect(messages(dir, 'error')).toEqual([
+    expect(messages(dir, 'error')).toEqual([]);
+    expect(messages(dir, 'warn')).toContainEqual(
       expect.stringContaining('doc:docs/guide.md#locks gone (no such file) → rebuild region locks'),
+    );
+  });
+});
+
+describe('region freshness: a retired name in a region is a warning', () => {
+  const stale = join(import.meta.dir, 'fixtures', 'retired-terms', 'fail', 'stale-region');
+
+  test('one line per region that says rebuild, never which line to edit; counted in the summary', () => {
+    const { findings } = checkRegionFreshness(stale);
+    expect(findings.filter((finding) => finding.level === 'error')).toEqual([]);
+    const named = findings
+      .map((finding) => finding.message)
+      .filter((m) => m.includes('names something retired'));
+    expect(named).toEqual([
+      expect.stringMatching(
+        /^region \.foundry\/base\/regions\/locks names something retired: "`threads` resource" \(knowledge\.md ×1\) → rebuild region locks in the repo whose docs \.foundry\/base\/regions was built from, then copy it here/,
+      ),
+      expect.stringMatching(
+        /^\.foundry\/regions \(the set's own files\) names something retired: "floor\.mayTake" \(GLOSSARY\.md ×1\) → rebuild the regions in \.foundry\/regions/,
+      ),
+      expect.stringMatching(
+        /^region \.foundry\/regions\/conv names something retired: "threadsTerms", "narrowsThreadsTerms" \(knowledge\.md ×3, region\.json ×1\) → rebuild region conv \(generated from the docs: never edit it by hand/,
+      ),
     ]);
+    for (const message of named) expect(message).not.toMatch(/\.md:\d|\.json:\d/);
+    expect(findings.at(-1)?.message).toContain('1 unverifiable, 1 naming something retired;');
+  });
+
+  test("a region's copy of an allowed doc line is allowed with it, stale or not", () => {
+    const dir = clone('../retired-terms/pass/allowed-copy');
+    const doc = join(dir, 'docs/history/0.12.md');
+    writeFileSync(doc, readFileSync(doc, 'utf8').replace('The 0.12 grant', 'The old grant'));
+    const { findings } = checkRegionFreshness(dir);
+    expect(findings.filter((finding) => finding.level === 'error')).toEqual([]);
+    expect(findings.map((finding) => finding.message).join('\n')).not.toContain(
+      'names something retired',
+    );
   });
 });
 
@@ -198,52 +223,6 @@ describe('region freshness: layers', () => {
   });
 });
 
-describe('region freshness: baseline (gone units only)', () => {
-  const baseline = (dir: string) => join(dir, REGION_FRESHNESS_DIR, 'baseline.txt');
-
-  test('a region with a gone section in the baseline warns; the baseline refuses to grow and must shrink', () => {
-    const dir = clone('repo');
-    edit(dir, 'README.md', '## Errors', '## Failures');
-    expect(writeRegionFreshnessBaseline(dir)).toEqual({ written: 1, refused: [] });
-    expect(readFileSync(baseline(dir), 'utf8')).toContain('.foundry/regions/widgets\t1\n');
-    expect(messages(dir, 'error')).toEqual([]);
-    expect(messages(dir, 'warn')).toContain(
-      `1 region with gone sections in ${REGION_FRESHNESS_DIR}/baseline.txt (not blocking; rebuild it and shrink the baseline)`,
-    );
-
-    // A stale (changed) copy never needs the baseline.
-    edit(dir, 'docs/guide.md', 'Take a lock', 'Hold a lock');
-    expect(messages(dir, 'error')).toEqual([]);
-    expect(writeRegionFreshnessBaseline(dir)).toEqual({ written: 1, refused: [] });
-
-    rmSync(join(dir, 'docs/guide.md'));
-    expect(messages(dir, 'error')).toEqual([
-      expect.stringContaining('region .foundry/regions/locks copies sections that are gone'),
-    ]);
-    expect(writeRegionFreshnessBaseline(dir)).toEqual({
-      written: 0,
-      refused: ['.foundry/regions/locks 1× (baseline 0)'],
-    });
-
-    writeFileSync(join(dir, 'docs/guide.md'), readFileSync(join(fixtures, 'repo/docs/guide.md')));
-    edit(dir, 'README.md', '## Failures', '## Errors');
-    expect(messages(dir, 'error')).toEqual([
-      `${REGION_FRESHNESS_DIR}/baseline.txt: .foundry/regions/widgets copies no gone section now → delete its line`,
-    ]);
-    expect(writeRegionFreshnessBaseline(dir)).toEqual({ written: 0, refused: [] });
-    expect(existsSync(baseline(dir))).toBe(false);
-  });
-
-  test('a baseline line without a count fails', () => {
-    const dir = clone('repo');
-    mkdirSync(join(dir, REGION_FRESHNESS_DIR), { recursive: true });
-    writeFileSync(baseline(dir), '.foundry/regions/widgets\n');
-    expect(messages(dir, 'error')).toEqual([
-      expect.stringContaining('".foundry/regions/widgets" is not <region path>'),
-    ]);
-  });
-});
-
 describe('the builder’s cut', () => {
   test('slugs as the builder does', () => {
     expect(slug('Distributed Lock (`createLock`)')).toBe('distributed-lock-createlock');
@@ -284,13 +263,13 @@ describe('the builder’s cut', () => {
 });
 
 describe('regions command line', () => {
-  test('takes a dir and --write-baseline, nothing else', () => {
-    expect(parseCommandLine(['regions', '/repo', '--write-baseline'])).toMatchObject({
+  test('takes a dir, nothing else: there is nothing to baseline', () => {
+    expect(parseCommandLine(['regions', '/repo'])).toMatchObject({
       command: 'regions',
       positionals: ['/repo'],
-      writeBaseline: true,
     });
     expect(() => parseCommandLine(['regions', '--preset=base'])).toThrow(UsageError);
+    expect(() => parseCommandLine(['regions', '--write-baseline'])).toThrow(UsageError);
     expect(() => parseCommandLine(['check', '--write-baseline'])).toThrow(UsageError);
   });
 });

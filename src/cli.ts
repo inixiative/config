@@ -30,9 +30,7 @@ import {
   laneOf,
   laneSection,
   loadManifest,
-  type Manifest,
   ownVersion,
-  type Preset,
   packageRoot,
   processStart,
   promoteCandidates,
@@ -42,12 +40,7 @@ import {
   writeManifest,
 } from './lib';
 import { type Project, portsFor, projects } from './ports';
-import {
-  checkRegionFreshness,
-  describeRegion,
-  summariseRegions,
-  writeRegionFreshnessBaseline,
-} from './regionFreshness';
+import { checkRegionFreshness, describeRegion, summariseRegions } from './regionFreshness';
 import { checkRetiredTerms, writeRetiredTermsBaseline } from './retiredTerms';
 
 let commandLine: CommandLine;
@@ -57,7 +50,7 @@ try {
   if (!(error instanceof UsageError)) throw error;
   console.error(`✗ ${error.message}`);
   console.error(
-    'Usage: inixiative-config check [dir] [--preset=base|node|react]\n       inixiative-config sync [dir] [--preset=base|node|react] [--force] [--no-install]\n       inixiative-config scan [root] [--lane=primitives|agentic]\n       inixiative-config train [root] [--lane=primitives|agentic] [--push] [--dry-run]\n       inixiative-config ports [project]\n       inixiative-config terms [dir] [--write-baseline]\n       inixiative-config regions [dir] [--write-baseline]',
+    'Usage: inixiative-config check [dir] [--preset=base|node|react]\n       inixiative-config sync [dir] [--preset=base|node|react] [--force] [--no-install]\n       inixiative-config scan [root] [--lane=primitives|agentic]\n       inixiative-config train [root] [--lane=primitives|agentic] [--push] [--dry-run]\n       inixiative-config ports [project]\n       inixiative-config terms [dir] [--write-baseline]\n       inixiative-config regions [dir]',
   );
   process.exit(2);
 }
@@ -147,40 +140,34 @@ const offDefaultBranch = (cwd: string): { branch: string; main: string } | null 
   return current === main ? null : { branch: current, main };
 };
 
-/** Everything `check` reports for a repo: the train runs the same, in process, before it commits. */
-const configCheck = (repoDir: string, against: Manifest, preset?: Preset): Finding[] => [
-  ...inspect(repoDir, against, preset).findings,
-  ...checkRetiredTerms(repoDir).findings,
-  ...checkRegionFreshness(repoDir).findings,
-];
-
 if (command === 'check') {
-  process.exit(report(configCheck(dir, manifest, presetFlag)) > 0 ? 1 : 0);
+  const { findings } = inspect(dir, manifest, presetFlag);
+  process.exit(
+    report([
+      ...findings,
+      ...checkRetiredTerms(dir).findings,
+      ...checkRegionFreshness(dir).findings,
+    ]) > 0
+      ? 1
+      : 0,
+  );
 }
 
-const writeShrinkingBaseline = (
-  write: (root: string) => { written: number; refused: string[] },
-  refusal: string,
-): never => {
-  const { written, refused } = write(dir);
-  if (refused.length > 0) {
-    console.error(`✗ the baseline only shrinks; ${refusal}:`);
-    for (const entry of refused) console.error(`  ${entry}`);
-    process.exit(1);
-  }
-  console.log(`wrote ${written} baseline entr${written === 1 ? 'y' : 'ies'}`);
-  process.exit(0);
-};
-
 if (command === 'terms') {
-  if (commandLine.writeBaseline)
-    writeShrinkingBaseline(writeRetiredTermsBaseline, 'fix these uses (or allow a legitimate one)');
+  if (commandLine.writeBaseline) {
+    const { written, refused } = writeRetiredTermsBaseline(dir);
+    if (refused.length > 0) {
+      console.error('✗ the baseline only shrinks; fix these uses (or allow a legitimate one):');
+      for (const entry of refused) console.error(`  ${entry}`);
+      process.exit(1);
+    }
+    console.log(`wrote ${written} baseline entr${written === 1 ? 'y' : 'ies'}`);
+    process.exit(0);
+  }
   process.exit(report(checkRetiredTerms(dir).findings) > 0 ? 1 : 0);
 }
 
 if (command === 'regions') {
-  if (commandLine.writeBaseline)
-    writeShrinkingBaseline(writeRegionFreshnessBaseline, 'rebuild these regions');
   const { findings, regions } = checkRegionFreshness(dir);
   for (const region of regions)
     if (['fresh', 'partly checked', 'not checked'].includes(region.status))
@@ -427,39 +414,7 @@ if (command === 'train') {
     };
   };
 
-  /** A repo whose CI runs `inixiative-config check`, itself or through lib-ci.yml, is judged by it. */
-  const judgedByConfigCheck = (repoDir: string): boolean => {
-    const workflows = join(repoDir, '.github', 'workflows');
-    if (!existsSync(workflows)) return false;
-    return readdirSync(workflows)
-      .filter((file) => /\.ya?ml$/.test(file))
-      .some((file) => {
-        const text = readFileSync(join(workflows, file), 'utf8');
-        return (
-          text.includes('inixiative-config check') ||
-          text.includes('config/.github/workflows/lib-ci.yml')
-        );
-      });
-  };
-  /**
-   * The check the repo's CI will judge this commit by, run in process with this release's rules
-   * against the target set: null when it passes or the repo's CI doesn't run it.
-   */
-  const configGate = (checkout: Checkout): string | null => {
-    if (!judgedByConfigCheck(checkout.dir)) return null;
-    const errors = configCheck(checkout.dir, target()).filter(
-      (finding) => finding.level === 'error',
-    );
-    if (errors.length === 0) return null;
-    for (const finding of errors.slice(0, 10)) console.log(`  ✗ ${finding.message}`);
-    if (errors.length > 10) console.log(`  … and ${errors.length - 10} more`);
-    return `inixiative-config check failed in ${checkout.name} (${errors.length} error${errors.length === 1 ? '' : 's'})`;
-  };
-
-  /**
-   * Re-lock onto the blessed set and, unless told otherwise, run the repo's own check and the
-   * config check its CI runs.
-   */
+  /** Re-lock onto the blessed set and, unless told otherwise, run the repo's own check. */
   const relockAndCheck = (checkout: Checkout, check = true) =>
     effect(`re-lock ${checkout.name}${check ? ' and run its check' : ''}`, undefined, () => {
       // bun caches registry manifests, so a version the train just published can look missing.
@@ -481,8 +436,6 @@ if (command === 'train') {
       ) {
         throw new CheckFailed(`check failed in ${checkout.name}`);
       }
-      const gate = check ? configGate(checkout) : null;
-      if (gate) throw new CheckFailed(gate);
     });
   /**
    * Checkouts and branches this train brought onto the blessed set; they follow this package's
@@ -748,19 +701,9 @@ if (command === 'train') {
                       ? `⚠ check timed out after ${adoptCheckTimeout}s in ${checkout.name} after train:adopt — ${leftOut}`
                       : `⚠ check still fails in ${checkout.name} after train:adopt — ${leftOut}`,
                   );
-                } else if (configGate(branchCheckout)) {
-                  reason = 'inixiative-config check fails after train:adopt';
-                  console.log(
-                    `⚠ inixiative-config check fails in ${checkout.name} after train:adopt — ${leftOut}`,
-                  );
                 }
               }
               if (!reason && produced) git(branchCheckout.dir, 'read-tree', produced);
-            } else if (configGate(branchCheckout)) {
-              reason = 'inixiative-config check fails';
-              console.log(
-                `⚠ inixiative-config check fails in ${checkout.name} — ${branch} carries the re-lock only and needs work before it merges`,
-              );
             }
             const message = reason
               ? [
@@ -1221,13 +1164,6 @@ if (command === 'train') {
         const { inspection, bumped, staleLock } = bumpRanges(checkout);
         if (!bumped && !staleLock) continue;
         relockAndCheck(checkout, false);
-        const gate = onBranch
-          ? null
-          : effect('run the config check', null, () => configGate(checkout));
-        if (gate) {
-          restore(checkout);
-          throw new Abort(`${gate} on @inixiative/config@${version}: not committed`);
-        }
         if (commitOwned(checkout, inspection.packagePaths, true) && !onBranch)
           committed.add(checkout.dir);
         if (!dryRun) console.log(`✓ ${checkout.name} locked to @inixiative/config@${version}`);

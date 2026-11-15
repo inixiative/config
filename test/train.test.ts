@@ -594,31 +594,6 @@ describe('two-phase blessing', () => {
     );
   }, 60_000);
 
-  test('a repo whose CI runs inixiative-config check is gated on it: a red config check adopts on a branch, never lands on main', () => {
-    const { train, at } = offlineTrain();
-    const oracle = at('oracle');
-    write(
-      join(oracle, '.github', 'workflows', 'ci.yml'),
-      'jobs:\n  ci:\n    steps:\n      - run: bunx inixiative-config check .\n',
-    );
-    write(join(oracle, 'README.md'), 'Oracle talks to the Kastle.\n');
-    run(oracle, realGit, 'add', '-A');
-    run(oracle, realGit, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'ci');
-    const before = gitOut(oracle, 'rev-parse', 'HEAD');
-    const { out } = train();
-    expect(out).toContain('✗ inixiative-config check failed in oracle');
-    expect(out).toContain('against the candidates — it adopts them on a branch');
-    expect(gitOut(oracle, 'rev-parse', 'HEAD')).toBe(before);
-    expect(JSON.parse(readFileSync(join(oracle, 'package.json'), 'utf8')).dependencies).toEqual({
-      '@inixiative/archive': '^0.18.0',
-    });
-    expect(gitOut(oracle, 'log', '-1', '--format=%B', adoption)).toContain(
-      'Train-Adopt: incomplete (inixiative-config check fails)',
-    );
-    // Foundry's CI runs no config check: its own check alone decides, as before.
-    expect(out).toContain(`@inixiative/foundry: ${adoption} — opened this run`);
-  }, 90_000);
-
   test('an adoption its hooks reject leaves no branch behind and holds the candidate', () => {
     const { train, bom, at } = offlineTrain();
     write(join(at('foundry'), '.git', 'hooks', 'pre-commit'), '#!/bin/sh\nexit 1\n');
