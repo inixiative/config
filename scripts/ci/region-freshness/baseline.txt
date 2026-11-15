@@ -1,0 +1,5 @@
+# Stale Warden regions waiting for a rebuild: reported, not failed (@inixiative/config check).
+# One per line: <region path>\t<doc units out of date>. Rebuild the region and lower or delete its line.
+# Rewrite after rebuilding: inixiative-config regions --write-baseline (it refuses to grow).
+.foundry/regions/retired-terms	2
+.foundry/regions/version-coherence	2

@@ -1,0 +1,23 @@
+{
+  "id": "widgets",
+  "title": "Widgets",
+  "routing": "Is this about widgets?",
+  "concepts": [
+    "widgets"
+  ],
+  "tokens": 352,
+  "tokenMethod": "chars/4",
+  "sources": {
+    "docs": [
+      "README.md"
+    ],
+    "docUnits": [
+      "doc:README.md#preface",
+      "doc:README.md#usage",
+      "doc:README.md#errors"
+    ],
+    "catalogClusters": [],
+    "codeEntries": 0,
+    "docMembers": 0
+  }
+}

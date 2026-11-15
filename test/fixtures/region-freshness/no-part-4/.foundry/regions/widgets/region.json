@@ -1,0 +1,13 @@
+{
+  "id": "widgets",
+  "title": "Widgets",
+  "routing": "Is this about widgets?",
+  "sources": {
+    "docs": [
+      "README.md"
+    ],
+    "docUnits": [
+      "doc:README.md#usage"
+    ]
+  }
+}

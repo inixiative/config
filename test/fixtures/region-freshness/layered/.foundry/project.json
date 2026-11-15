@@ -1,0 +1,8 @@
+{
+  "chorus": {
+    "layers": [
+      { "regions": ".foundry/base/regions", "label": "base" },
+      { "regions": ".foundry/regions", "label": "own" }
+    ]
+  }
+}

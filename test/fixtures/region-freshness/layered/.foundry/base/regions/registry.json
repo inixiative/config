@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "project": "base",
+  "builtFrom": {
+    "docs": [
+      "README.md",
+      "docs/**"
+    ],
+    "libraries": {}
+  },
+  "concepts": [],
+  "regions": [
+    {
+      "id": "locks"
+    }
+  ]
+}

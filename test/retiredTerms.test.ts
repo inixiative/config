@@ -1,5 +1,13 @@
 import { describe, expect, test } from 'bun:test';
-import { cpSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCommandLine, UsageError } from '../src/args';
@@ -24,7 +32,7 @@ const errors = (fixture: string) =>
     .map((finding) => finding.message);
 
 describe('retired terms: pass', () => {
-  test('clean copy passes: connections, the medical story, principal, castle icons, a changelog, generated regions', () => {
+  test('clean copy passes: connections, the medical story, principal, castle icons, a changelog, a word in a generated region', () => {
     expect(checkRetiredTerms(join(fixtures, 'pass/clean')).findings).toEqual([]);
   });
 
@@ -35,6 +43,15 @@ describe('retired terms: pass', () => {
   test('the allow list covers a file and a directory', () => {
     expect(scanRetiredTerms(join(fixtures, 'pass/allowed')).length).toBe(3);
     expect(checkRetiredTerms(join(fixtures, 'pass/allowed')).findings).toEqual([]);
+  });
+
+  test("a region's verbatim copy of an allowed doc section is allowed with it", () => {
+    const dir = join(fixtures, 'pass/allowed-copy');
+    expect(scanRetiredTerms(dir).map((hit) => [hit.path, hit.copiedFrom])).toEqual([
+      ['.foundry/regions/conv/knowledge.md', 'docs/history/0.12.md'],
+      ['docs/history/0.12.md', undefined],
+    ]);
+    expect(checkRetiredTerms(dir).findings).toEqual([]);
   });
 
   test('baselined uses warn, never fail', () => {
@@ -61,6 +78,50 @@ describe('retired terms: fail', () => {
     expect(errors('fail/package-description')).toEqual([
       expect.stringContaining('package.json:1: "Your own LLM keys" (own-llm-keys)'),
     ]);
+  });
+
+  test('each name signet 0.18.0 removed fails with what replaced it', () => {
+    expect(errors('fail/signet-names')).toEqual([
+      expect.stringContaining(
+        'docs/conversations.md:3: "`threads` resource" (signet-threads-resource) → a `conversation` integration resource',
+      ),
+      expect.stringContaining(
+        'docs/conversations.md:3: "threadsResourceKind" (signet-threads-resource)',
+      ),
+      expect.stringContaining(
+        'docs/conversations.md:4: "threadsTerms" (signet-grant-terms) → conversation permissions, picked on the grant like operations: member.log',
+      ),
+      'retired term in docs/conversations.md:4: "floor.mayTake" (signet-may-take) → the member.take conversation permission (signet 0.18.0)',
+      expect.stringContaining(
+        'docs/conversations.md:5: "grantReach" (signet-grant-reach) → the grant row',
+      ),
+    ]);
+  });
+
+  test('a removed name in a generated region says rebuild it, never which line to edit', () => {
+    const found = errors('fail/stale-region');
+    expect(found).toEqual([
+      'retired term in .foundry/regions/README.md:3: "Kastle" (kastle) → Kingdom, owner, integration or Signet',
+      'retired term in .foundry/warden-brief.md:3: "mayTake" (signet-may-take) → the member.take conversation permission (signet 0.18.0)',
+      expect.stringMatching(
+        /^retired names in region \.foundry\/base\/regions\/locks: "`threads` resource" \(knowledge\.md ×1\) → rebuild region locks in the repo whose docs \.foundry\/base\/regions was built from, then copy it here \(generated from the docs: never edit it by hand/,
+      ),
+      expect.stringMatching(
+        /^retired names in \.foundry\/regions \(the set's own files\): "floor\.mayTake" \(GLOSSARY\.md ×1\) → rebuild the regions in \.foundry\/regions \(/,
+      ),
+      expect.stringMatching(
+        /^retired names in region \.foundry\/regions\/conv: "threadsTerms", "narrowsThreadsTerms" \(knowledge\.md ×3, region\.json ×1\) → rebuild region conv \(generated from the docs: never edit it by hand; fix any source doc that still says this first\)\. Today: signet-grant-terms: conversation permissions/,
+      ),
+    ]);
+    for (const message of found.filter((line) => line.startsWith('retired names')))
+      expect(message).not.toMatch(/\.md:\d|\.json:\d/);
+  });
+
+  test('a marketing word in a generated region is not checked there; a removed concept is', () => {
+    expect(scanRetiredTerms(join(fixtures, 'pass/clean'))).toEqual([]);
+    expect(
+      scanRetiredTerms(join(fixtures, 'fail/stale-region')).map((hit) => hit.term.removedConcept),
+    ).not.toContain(undefined);
   });
 
   test('a baseline entry that shrank or went away fails until the baseline is lowered', () => {
@@ -99,6 +160,33 @@ describe('writing the baseline', () => {
       written: 0,
       refused: ['README.md foundry-roles 2× (baseline 1)'],
     });
+  });
+
+  test('adds uses of a term the baseline was not written against, and records the terms', () => {
+    const dir = clone('fail/signet-names');
+    mkdirSync(join(dir, RETIRED_TERMS_DIR), { recursive: true });
+    writeFileSync(
+      join(dir, RETIRED_TERMS_DIR, 'baseline.txt'),
+      '# terms: kastle castle\ndocs/conversations.md\tkastle\t1\n',
+    );
+    writeFileSync(join(dir, 'README.md'), 'Kastle was the old name.\n');
+    expect(writeRetiredTermsBaseline(dir)).toEqual({
+      written: 0,
+      refused: ['README.md kastle 1× (baseline 0)'],
+    });
+    rmSync(join(dir, 'README.md'));
+    const result = writeRetiredTermsBaseline(dir);
+    expect(result).toEqual({ written: 4, refused: [] });
+    const written = readFileSync(join(dir, RETIRED_TERMS_DIR, 'baseline.txt'), 'utf8');
+    expect(written).toContain('docs/conversations.md\tsignet-grant-terms\t1\n');
+    expect(written).toMatch(/^# terms: kastle castle .*signet-grant-reach/m);
+  });
+
+  test('a baseline without a terms line is held to every term', () => {
+    const dir = clone('fail/signet-names');
+    mkdirSync(join(dir, RETIRED_TERMS_DIR), { recursive: true });
+    writeFileSync(join(dir, RETIRED_TERMS_DIR, 'baseline.txt'), 'docs/other.md\tkastle\t1\n');
+    expect(writeRetiredTermsBaseline(dir).refused).toHaveLength(4);
   });
 
   test('shrinks an existing baseline, and deletes it once empty', () => {

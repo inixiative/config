@@ -40,6 +40,11 @@ import {
   writeManifest,
 } from './lib';
 import { type Project, portsFor, projects } from './ports';
+import {
+  checkRegionFreshness,
+  describeRegion,
+  writeRegionFreshnessBaseline,
+} from './regionFreshness';
 import { checkRetiredTerms, writeRetiredTermsBaseline } from './retiredTerms';
 
 let commandLine: CommandLine;
@@ -49,7 +54,7 @@ try {
   if (!(error instanceof UsageError)) throw error;
   console.error(`✗ ${error.message}`);
   console.error(
-    'Usage: inixiative-config check [dir] [--preset=base|node|react]\n       inixiative-config sync [dir] [--preset=base|node|react] [--force] [--no-install]\n       inixiative-config scan [root] [--lane=primitives|agentic]\n       inixiative-config train [root] [--lane=primitives|agentic] [--push] [--dry-run]\n       inixiative-config ports [project]\n       inixiative-config terms [dir] [--write-baseline]',
+    'Usage: inixiative-config check [dir] [--preset=base|node|react]\n       inixiative-config sync [dir] [--preset=base|node|react] [--force] [--no-install]\n       inixiative-config scan [root] [--lane=primitives|agentic]\n       inixiative-config train [root] [--lane=primitives|agentic] [--push] [--dry-run]\n       inixiative-config ports [project]\n       inixiative-config terms [dir] [--write-baseline]\n       inixiative-config regions [dir] [--write-baseline]',
   );
   process.exit(2);
 }
@@ -141,21 +146,44 @@ const offDefaultBranch = (cwd: string): { branch: string; main: string } | null 
 
 if (command === 'check') {
   const { findings } = inspect(dir, manifest, presetFlag);
-  process.exit(report([...findings, ...checkRetiredTerms(dir).findings]) > 0 ? 1 : 0);
+  process.exit(
+    report([
+      ...findings,
+      ...checkRetiredTerms(dir).findings,
+      ...checkRegionFreshness(dir).findings,
+    ]) > 0
+      ? 1
+      : 0,
+  );
 }
 
-if (command === 'terms') {
-  if (commandLine.writeBaseline) {
-    const { written, refused } = writeRetiredTermsBaseline(dir);
-    if (refused.length > 0) {
-      console.error('✗ the baseline only shrinks; fix these uses (or allow a legitimate one):');
-      for (const entry of refused) console.error(`  ${entry}`);
-      process.exit(1);
-    }
-    console.log(`wrote ${written} baseline entr${written === 1 ? 'y' : 'ies'}`);
-    process.exit(0);
+const writeShrinkingBaseline = (
+  write: (root: string) => { written: number; refused: string[] },
+  refusal: string,
+): never => {
+  const { written, refused } = write(dir);
+  if (refused.length > 0) {
+    console.error(`✗ the baseline only shrinks; ${refusal}:`);
+    for (const entry of refused) console.error(`  ${entry}`);
+    process.exit(1);
   }
+  console.log(`wrote ${written} baseline entr${written === 1 ? 'y' : 'ies'}`);
+  process.exit(0);
+};
+
+if (command === 'terms') {
+  if (commandLine.writeBaseline)
+    writeShrinkingBaseline(writeRetiredTermsBaseline, 'fix these uses (or allow a legitimate one)');
   process.exit(report(checkRetiredTerms(dir).findings) > 0 ? 1 : 0);
+}
+
+if (command === 'regions') {
+  if (commandLine.writeBaseline)
+    writeShrinkingBaseline(writeRegionFreshnessBaseline, 'rebuild these regions');
+  const { findings, regions } = checkRegionFreshness(dir);
+  for (const region of regions.filter((region) => region.status === 'fresh'))
+    console.log(`✓ ${describeRegion(region)}`);
+  process.exit(report(findings) > 0 ? 1 : 0);
 }
 
 const laneLabel = (checkout: Checkout): string =>

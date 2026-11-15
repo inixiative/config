@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "project": "repo",
+  "builtFrom": {
+    "docs": [
+      "README.md",
+      "docs/**"
+    ],
+    "libraries": {
+      "lib": "abc1234"
+    }
+  },
+  "concepts": [],
+  "regions": [
+    {
+      "id": "locks"
+    },
+    {
+      "id": "widgets"
+    }
+  ]
+}
