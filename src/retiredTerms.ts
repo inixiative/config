@@ -3,7 +3,13 @@ import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { compareBaseline, readBaseline, readList, writeBaseline } from './baseline';
 import type { Finding } from './lib';
-import { OWN_REGIONS_DIR, unitCopies, unitPath } from './regionFreshness';
+import {
+  freshUnits,
+  OWN_REGIONS_DIR,
+  scanRegionFreshness,
+  unitCopies,
+  unitPath,
+} from './regionFreshness';
 
 /**
  * Retired terms: names and phrases the project has retired (CLAUDE.md "Dead concepts", the copy
@@ -152,8 +158,10 @@ export type RetiredTermHit = {
   line: number;
   term: RetiredTerm;
   text: string;
-  /** For a hit inside a region's copy of a doc section: the doc it was copied from. */
-  copiedFrom?: string;
+  /** The whole line the hit is on. */
+  lineText: string;
+  /** For a hit inside a region's copy of a doc section: the unit, and the doc it was copied from. */
+  copiedFrom?: { unit: string; path: string };
 };
 
 const walk = (root: string, dir = '', out: string[] = []): string[] => {
@@ -219,7 +227,12 @@ export const scanRetiredTerms = (root: string): RetiredTermHit[] => {
     const copies = generated && path.endsWith('/knowledge.md') ? (unitCopies(raw) ?? []) : [];
     const copiedFrom = (index: number) => {
       const copy = copies.find((span) => span.start <= index && index < span.end);
-      return copy ? (unitPath(copy.unit) ?? undefined) : undefined;
+      const from = copy && unitPath(copy.unit);
+      return copy && from ? { unit: copy.unit, path: from } : undefined;
+    };
+    const lineTextAt = (index: number) => {
+      const end = text.indexOf('\n', index);
+      return text.slice(text.lastIndexOf('\n', index - 1) + 1, end === -1 ? undefined : end);
     };
     for (const term of RETIRED_TERMS) {
       if (generated ? !term.removedConcept : term.scope === 'public' && !isPublic) continue;
@@ -229,6 +242,7 @@ export const scanRetiredTerms = (root: string): RetiredTermHit[] => {
           line: isManifest ? lineOf(raw, raw.indexOf('"description"')) : lineOf(text, match.index),
           term,
           text: match[0],
+          lineText: lineTextAt(match.index),
           copiedFrom: copiedFrom(match.index),
         });
       }
@@ -279,26 +293,59 @@ const rebuildFindings = (hits: RetiredTermHit[]): Finding[] => {
 
 /**
  * `<term>` allows a term everywhere; `<path>\t<term>` in one file, or under a directory when the
- * path ends in `/`. For legitimate uses only (a retired-names table, an icon name); stale copy
- * belongs in the baseline until it is fixed. A region's verbatim copy of an allowed doc section is
- * allowed with it.
+ * path ends in `/` (a file that is history as a whole: a dated record, a review); and
+ * `<path>\t<term>\t"<snippet>"` only on a line of that file holding the snippet (one history
+ * mention in a live doc, wherever the line moves). For legitimate uses only; stale copy belongs in
+ * the baseline until it is fixed. A region's verbatim copy of an allowed line is allowed with it
+ * while the regions check finds that copy fresh: a stale copy carrying a retired name is not.
  */
-const allowedBy = (lines: string[]) => {
-  const rules = lines.map((line) => {
-    const [first, second] = line.split('\t');
-    return second === undefined
-      ? { path: '', term: first.trim() }
-      : { path: first, term: second.trim() };
-  });
-  const covers = (rulePath: string, path: string | undefined) =>
-    path !== undefined &&
-    (rulePath === path || (rulePath.endsWith('/') && path.startsWith(rulePath)));
+type AllowRule = { path: string; term: string; snippet?: string };
+
+const SNIPPET = /^"(.+)"$/;
+
+const parseAllow = (lines: string[]): { rules: AllowRule[]; malformed: string[] } => {
+  const rules: AllowRule[] = [];
+  const malformed: string[] = [];
+  for (const line of lines) {
+    const fields = line.split('\t');
+    if (fields.length === 1) rules.push({ path: '', term: fields[0].trim() });
+    else if (fields.length === 2) rules.push({ path: fields[0], term: fields[1].trim() });
+    else {
+      const snippet = fields.length === 3 ? SNIPPET.exec(fields[2].trim()) : null;
+      if (snippet) rules.push({ path: fields[0], term: fields[1].trim(), snippet: snippet[1] });
+      else malformed.push(line);
+    }
+  }
+  return { rules, malformed };
+};
+
+const allowedBy = (rules: AllowRule[], fresh: Set<string>) => {
+  const covers = (rulePath: string, path: string) =>
+    rulePath === path || (rulePath.endsWith('/') && path.startsWith(rulePath));
+  const freshCopy = (hit: RetiredTermHit) => {
+    const region = regionFileOf(hit.path);
+    return (
+      hit.copiedFrom !== undefined &&
+      region?.region !== undefined &&
+      fresh.has(`${region.dir}/${region.region}\t${hit.copiedFrom.unit}`)
+    );
+  };
   return (hit: RetiredTermHit) =>
     rules.some(
       (rule) =>
         rule.term === hit.term.id &&
-        (rule.path === '' || covers(rule.path, hit.path) || covers(rule.path, hit.copiedFrom)),
+        (rule.snippet === undefined || hit.lineText.includes(rule.snippet)) &&
+        (rule.path === '' ||
+          covers(rule.path, hit.path) ||
+          (hit.copiedFrom !== undefined &&
+            covers(rule.path, hit.copiedFrom.path) &&
+            freshCopy(hit))),
     );
+};
+
+const allowList = (root: string) => {
+  const { rules, malformed } = parseAllow(readList(root, ALLOW_FILE));
+  return { allowed: allowedBy(rules, freshUnits(scanRegionFreshness(root).regions)), malformed };
 };
 
 const countByKey = (hits: RetiredTermHit[]): Map<string, number> => {
@@ -313,14 +360,24 @@ const countByKey = (hits: RetiredTermHit[]): Map<string, number> => {
 /**
  * The `# terms:` line of a baseline: the terms it was written against. A term added to the list
  * later is one whose uses predate the rule in that repo, so `--write-baseline` may add them. A
- * baseline without the line was written against every term.
+ * baseline without the line was written by a release whose list was `FIRST_TERMS`.
  */
 const TERMS_LINE = /^# terms: (.*)$/m;
+const FIRST_TERMS = [
+  'kastle',
+  'castle',
+  'runtime-keys',
+  'medical-demo',
+  'retired-workspaces',
+  'foundry-oracle',
+  'own-llm-keys',
+  'foundry-roles',
+];
 const baselineTerms = (root: string): Set<string> | null => {
   const abs = join(root, BASELINE_FILE);
   if (!existsSync(abs)) return null;
   const match = TERMS_LINE.exec(readFileSync(abs, 'utf8'));
-  return match ? new Set(match[1].split(/\s+/).filter(Boolean)) : null;
+  return new Set(match ? match[1].split(/\s+/).filter(Boolean) : FIRST_TERMS);
 };
 
 export type RetiredTermsResult = {
@@ -334,14 +391,20 @@ export type RetiredTermsResult = {
  * (lower or delete it), so the baseline only shrinks. Baselined uses are one warning.
  */
 export const checkRetiredTerms = (root: string): RetiredTermsResult => {
-  const allowed = allowedBy(readList(root, ALLOW_FILE));
+  const { allowed, malformed: badRules } = allowList(root);
   const hits = scanRetiredTerms(root).filter((hit) => !allowed(hit));
   const counts = countByKey(hits);
   const { counts: baseline, malformed } = readBaseline(root, BASELINE_FILE, 2);
-  const findings: Finding[] = malformed.map((line) => ({
-    level: 'error',
-    message: `${BASELINE_FILE}: "${line}" is not <path>\\t<term>\\t<count> → rewrite it with terms --write-baseline`,
-  }));
+  const findings: Finding[] = [
+    ...badRules.map((line) => ({
+      level: 'error' as const,
+      message: `${ALLOW_FILE}: "${line}" is not <term>, <path>\\t<term> or <path>\\t<term>\\t"<snippet>"`,
+    })),
+    ...malformed.map((line) => ({
+      level: 'error' as const,
+      message: `${BASELINE_FILE}: "${line}" is not <path>\\t<term>\\t<count> → rewrite it with terms --write-baseline`,
+    })),
+  ];
   const { over, under, covered } = compareBaseline(counts, baseline);
   const fresh = over.flatMap(({ key, known }) =>
     hits.filter((hit) => `${hit.path}\t${hit.term.id}` === key).slice(known),
@@ -376,10 +439,12 @@ export const checkRetiredTerms = (root: string): RetiredTermsResult => {
 /**
  * Writes the baseline from today's uses. Only when there is none yet, or when it only shrinks:
  * a new use is fixed (or, if legitimate, allowed), never baselined. Uses of a term the baseline
- * was not written against (one added to the list since) predate the rule there, and are added.
+ * was not written against (one added to the list since) predate the rule there, and are added;
+ * a baseline from a release before the `# terms:` line is read as written against `FIRST_TERMS`
+ * and rewritten with the line.
  */
 export const writeRetiredTermsBaseline = (root: string): { written: number; refused: string[] } => {
-  const allowed = allowedBy(readList(root, ALLOW_FILE));
+  const { allowed } = allowList(root);
   const counts = countByKey(scanRetiredTerms(root).filter((hit) => !allowed(hit)));
   const known = baselineTerms(root);
   return writeBaseline(root, BASELINE_FILE, {

@@ -27,7 +27,7 @@ const clone = (fixture: string): string => {
 };
 
 const errors = (fixture: string) =>
-  checkRetiredTerms(join(fixtures, fixture))
+  checkRetiredTerms(fixture.startsWith('/') ? fixture : join(fixtures, fixture))
     .findings.filter((finding) => finding.level === 'error')
     .map((finding) => finding.message);
 
@@ -45,13 +45,48 @@ describe('retired terms: pass', () => {
     expect(checkRetiredTerms(join(fixtures, 'pass/allowed')).findings).toEqual([]);
   });
 
-  test("a region's verbatim copy of an allowed doc section is allowed with it", () => {
+  test("a region's fresh verbatim copy of an allowed doc section is allowed with it", () => {
     const dir = join(fixtures, 'pass/allowed-copy');
-    expect(scanRetiredTerms(dir).map((hit) => [hit.path, hit.copiedFrom])).toEqual([
+    expect(scanRetiredTerms(dir).map((hit) => [hit.path, hit.copiedFrom?.path])).toEqual([
       ['.foundry/regions/conv/knowledge.md', 'docs/history/0.12.md'],
       ['docs/history/0.12.md', undefined],
     ]);
     expect(checkRetiredTerms(dir).findings).toEqual([]);
+  });
+
+  test('a stale copy of an allowed section carrying a retired name fails', () => {
+    const dir = clone('pass/allowed-copy');
+    const doc = join(dir, 'docs/history/0.12.md');
+    writeFileSync(doc, readFileSync(doc, 'utf8').replace('The 0.12 grant', 'The old grant'));
+    expect(errors(dir)).toEqual([
+      expect.stringContaining('retired names in region .foundry/regions/conv: "threadsTerms"'),
+    ]);
+  });
+
+  test('a snippet entry allows one history mention, wherever its line moves, and nothing else in the file', () => {
+    const dir = clone('pass/history-snippet');
+    expect(checkRetiredTerms(dir).findings).toEqual([]);
+    const doc = join(dir, 'docs/CONVERSATIONS.md');
+    writeFileSync(
+      doc,
+      `# Moved\n\nNew intro.\n\n${readFileSync(doc, 'utf8')}\nA member with \`floor.mayTake\` takes the conch.\n`,
+    );
+    expect(errors(dir)).toEqual([
+      expect.stringMatching(
+        /^retired term in docs\/CONVERSATIONS\.md:\d+: "floor\.mayTake" \(signet-may-take\)/,
+      ),
+    ]);
+  });
+
+  test('an allow line with a third field that is not a quoted snippet fails', () => {
+    const dir = clone('pass/history-snippet');
+    writeFileSync(
+      join(dir, RETIRED_TERMS_DIR, 'allow.txt'),
+      'docs/CONVERSATIONS.md\tsignet-may-take\tonce\n',
+    );
+    expect(errors(dir)).toContainEqual(
+      expect.stringContaining('allow.txt: "docs/CONVERSATIONS.md\tsignet-may-take\tonce" is not'),
+    );
   });
 
   test('baselined uses warn, never fail', () => {
@@ -182,11 +217,20 @@ describe('writing the baseline', () => {
     expect(written).toMatch(/^# terms: kastle castle .*signet-grant-reach/m);
   });
 
-  test('a baseline without a terms line is held to every term', () => {
-    const dir = clone('fail/signet-names');
-    mkdirSync(join(dir, RETIRED_TERMS_DIR), { recursive: true });
-    writeFileSync(join(dir, RETIRED_TERMS_DIR, 'baseline.txt'), 'docs/other.md\tkastle\t1\n');
-    expect(writeRetiredTermsBaseline(dir).refused).toHaveLength(4);
+  test("a baseline from the release before the terms line (Foundry's) is read as the first eight terms and rewritten", () => {
+    const dir = clone('pass/legacy-baseline');
+    const file = join(dir, RETIRED_TERMS_DIR, 'baseline.txt');
+    expect(readFileSync(file, 'utf8')).not.toContain('# terms:');
+    expect(errors(dir)).toHaveLength(2);
+    expect(writeRetiredTermsBaseline(dir)).toEqual({ written: 2, refused: [] });
+    const written = readFileSync(file, 'utf8');
+    expect(written).toContain('docs/reference/CONVERSATIONS.md\tsignet-threads-resource\t1\n');
+    expect(written).toContain('docs/reference/CONVERSATIONS.md\tsignet-may-take\t1\n');
+    expect(written).toMatch(/^# terms: kastle castle .*signet-grant-reach$/m);
+    expect(errors(dir)).toEqual([]);
+    // Written once in the new format, it holds every term it names: a new Kastle is refused.
+    writeFileSync(join(dir, 'README.md'), 'Kastle was the old name.\n');
+    expect(writeRetiredTermsBaseline(dir).refused).toEqual(['README.md kastle 1× (baseline 0)']);
   });
 
   test('shrinks an existing baseline, and deletes it once empty', () => {

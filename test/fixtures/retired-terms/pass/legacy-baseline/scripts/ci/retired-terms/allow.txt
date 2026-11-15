@@ -1,0 +1,7 @@
+# Legitimate uses of retired terms (@inixiative/config check). <term> allows it everywhere;
+# <path>	<term> in one file, or under a directory when the path ends in /. Stale copy never goes here.
+
+# ANATOMY's retired-names table records what each dead name became.
+docs/ANATOMY.md	kastle
+docs/ANATOMY.md	castle
+docs/ANATOMY.md	runtime-keys

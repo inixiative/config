@@ -14,8 +14,9 @@ import type { Finding } from './lib';
 /**
  * Region freshness: a Warden region's part 4 holds the doc sections it was built from, verbatim
  * (`region.json` `sources.docUnits`). Re-cut each one from the repo's doc today, with the builder's
- * own rule (`docUnits.ts`), and compare. A region whose copy differs, or whose doc section is gone,
- * is out of date and is rebuilt, never edited: regions are generated.
+ * own rule (`docUnits.ts`), and compare. A copy that differs is stale, a warning: the region still
+ * points at things that exist, and a rebuild needs the builder. A unit whose file or heading is
+ * gone fails: the region describes a section that no longer exists.
  */
 
 /** Where the builder installs a repo's own regions, and Foundry's default chorus layer. */
@@ -36,11 +37,25 @@ export type UnitState =
   /** `region.json` names the unit, but `knowledge.md` holds no copy of it. */
   | { unit: string; state: 'uncopied' };
 
+export type RegionStatus =
+  /** Every unit it names was compared and matches. */
+  | 'fresh'
+  /** The units compared match; some it names copy another repo's docs. */
+  | 'partly checked'
+  /** Nothing to compare: no doc units, or all from another repo. */
+  | 'not checked'
+  /** A copy differs from its doc today (a warning). */
+  | 'stale'
+  /** A unit's file or heading is gone (a failure). */
+  | 'gone'
+  /** The region can't be read as a built one (a warning). */
+  | 'unverifiable';
+
 export type RegionFreshness = {
   /** The region's directory, repo-relative: `<regions dir>/<id>`. */
   path: string;
   id: string;
-  status: 'fresh' | 'stale' | 'unverifiable' | 'elsewhere';
+  status: RegionStatus;
   units: UnitState[];
   /** Why the region can't be compared at all. */
   unreadable?: string;
@@ -64,23 +79,25 @@ const readText = (abs: string): string | null => {
   }
 };
 
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
 const readObject = (abs: string): Record<string, unknown> | null => {
   const text = readText(abs);
   if (text === null) return null;
   try {
     const value: unknown = JSON.parse(text);
-    return value !== null && typeof value === 'object' && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : null;
+    return isObject(value) ? value : null;
   } catch {
     return null;
   }
 };
 
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === 'object' && !Array.isArray(value);
-
-/** Every regions directory the repo's chorus names (`chorus.layers`, else `chorus.regions`), plus its own. */
+/**
+ * The regions directories a project's chorus is built from, as Foundry reads them
+ * (`region-roster.ts` `chorusLayers`): `chorus.layers` as written, else the one `chorus.regions`
+ * names, else `.foundry/regions`. Directories outside the repo are not its files.
+ */
 const layerDirs = (root: string): string[] => {
   const settings = readObject(join(root, PROJECT_SETTINGS));
   const chorus = isObject(settings?.chorus) ? settings.chorus : {};
@@ -88,13 +105,11 @@ const layerDirs = (root: string): string[] => {
     ? chorus.layers.flatMap((layer) =>
         isObject(layer) && typeof layer.regions === 'string' ? [layer.regions] : [],
       )
-    : typeof chorus.regions === 'string'
-      ? [chorus.regions]
-      : [];
+    : [typeof chorus.regions === 'string' ? chorus.regions : OWN_REGIONS_DIR];
   const dirs = named
     .map((dir) => relative(root, isAbsolute(dir) ? resolve(dir) : resolve(root, dir)))
     .filter((dir) => dir !== '' && !dir.startsWith('..'));
-  return [...new Set([...dirs, OWN_REGIONS_DIR])];
+  return [...new Set(dirs)];
 };
 
 /** Region directories under `dir` (each holding a `region.json`), sorted. */
@@ -271,14 +286,18 @@ const checkRegion = (
   if (copies === null) return unreadable('knowledge.md has no part 4a (doc sections) to compare');
   const units = docUnits.map((unit) => checkUnit(root, unit, copies.get(unit), libraries, docs));
   const states = new Set(units.map((unit) => unit.state));
-  const status =
-    states.has('changed') || states.has('gone')
+  const checked = units.filter((unit) => unit.state !== 'elsewhere').length;
+  const status: RegionStatus = states.has('gone')
+    ? 'gone'
+    : states.has('changed')
       ? 'stale'
       : states.has('uncopied')
         ? 'unverifiable'
-        : units.length > 0 && units.every((unit) => unit.state === 'elsewhere')
-          ? 'elsewhere'
-          : 'fresh';
+        : checked === 0
+          ? 'not checked'
+          : checked < units.length
+            ? 'partly checked'
+            : 'fresh';
   return { path, id, status, units };
 };
 
@@ -301,34 +320,63 @@ const describeUnit = (unit: UnitState): string => {
   }
 };
 
-/** Units that make a region out of date: their doc changed, or is gone. */
-const outOfDate = (region: RegionFreshness): UnitState[] =>
-  region.units.filter((unit) => unit.state === 'changed' || unit.state === 'gone');
+const outOf = (region: RegionFreshness, state: UnitState['state']): UnitState[] =>
+  region.units.filter((unit) => unit.state === state);
 
 const rebuild = (region: RegionFreshness) =>
   `rebuild region ${region.id} (generated from the docs: never edit its files by hand)`;
+
+/** Units compared here, of the units the region names. */
+const coverage = (region: RegionFreshness): string => {
+  const named = region.units.length;
+  const checked = named - outOf(region, 'elsewhere').length;
+  return `${checked} of ${named} doc unit${named === 1 ? '' : 's'} checked`;
+};
 
 /** One line per region: what it is and what to do. */
 export const describeRegion = (region: RegionFreshness): string => {
   if (region.unreadable)
     return `region ${region.path} can't be checked: ${region.unreadable} → ${rebuild(region)}`;
-  const units = region.units.length;
+  const named = region.units.length;
   switch (region.status) {
-    case 'fresh': {
-      const elsewhere = region.units.filter((unit) => unit.state === 'elsewhere').length;
-      const checked = units - elsewhere;
-      return `region ${region.path} is fresh (${checked} doc unit${checked === 1 ? '' : 's'}${elsewhere ? `; ${elsewhere} from another repo, not checked here` : ''})`;
-    }
-    case 'elsewhere':
-      return `region ${region.path} copies only other repos' docs: not checked here`;
+    case 'fresh':
+      return `region ${region.path} is fresh (${coverage(region)})`;
+    case 'partly checked':
+      return `region ${region.path} is partly checked (${coverage(region)}; the rest copy another repo's docs)`;
+    case 'not checked':
+      return named === 0
+        ? `region ${region.path} is not checked (it copies no doc sections)`
+        : `region ${region.path} is not checked (${coverage(region)}: all copy another repo's docs)`;
+    case 'gone':
+      return `region ${region.path} copies sections that are gone: ${[...outOf(region, 'gone'), ...outOf(region, 'changed')].map(describeUnit).join('; ')} → ${rebuild(region)}`;
     case 'stale':
-      return `region ${region.path} is stale: ${outOfDate(region).map(describeUnit).join('; ')} → ${rebuild(region)}`;
+      return `region ${region.path} is stale: ${outOf(region, 'changed').map(describeUnit).join('; ')} → ${rebuild(region)} when you can; not blocking`;
     default:
-      return `region ${region.path} can't be checked: ${region.units
-        .filter((unit) => unit.state === 'uncopied')
+      return `region ${region.path} can't be checked: ${outOf(region, 'uncopied')
         .map(describeUnit)
         .join('; ')} → ${rebuild(region)}`;
   }
+};
+
+/** What this rule never reads, said wherever its results are. */
+export const REGIONS_NOT_SEEN =
+  'not seen by this check: code entries (part 4b), the model-written parts 1–3, recognise.md, GLOSSARY.md, and doc sections no region copies';
+
+/** One line: how many regions are in each state. */
+export const summariseRegions = (regions: RegionFreshness[]): string => {
+  const order: RegionStatus[] = [
+    'fresh',
+    'partly checked',
+    'not checked',
+    'stale',
+    'gone',
+    'unverifiable',
+  ];
+  const counts = order
+    .map((status) => [status, regions.filter((region) => region.status === status).length] as const)
+    .filter(([, n]) => n > 0)
+    .map(([status, n]) => `${n} ${status}`);
+  return `${regions.length} region${regions.length === 1 ? '' : 's'} in ${OWN_REGIONS_DIR}: ${counts.join(', ')}; ${REGIONS_NOT_SEEN}`;
 };
 
 /** Every region of the repo's own layer, compared; other layers named, not checked. */
@@ -338,11 +386,11 @@ export const scanRegionFreshness = (root: string): Omit<RegionFreshnessResult, '
   const docs: DocCache = new Map();
   for (const dir of layerDirs(root)) {
     const ids = regionIds(root, dir);
+    if (ids.length === 0) continue;
     const registry = readObject(join(root, dir, 'registry.json'));
     const project = typeof registry?.project === 'string' ? registry.project : undefined;
     const own = dir === OWN_REGIONS_DIR;
-    if (ids.length === 0 && !own) continue;
-    if (ids.length > 0) layers.push({ dir, own, project, regions: ids.length });
+    layers.push({ dir, own, project, regions: ids.length });
     if (!own) continue;
     const libraries = librariesOf(registry);
     for (const id of ids) regions.push(checkRegion(root, dir, id, libraries, docs));
@@ -350,29 +398,45 @@ export const scanRegionFreshness = (root: string): Omit<RegionFreshnessResult, '
   return { layers, regions };
 };
 
+/** `<region path>\t<unit id>` for every unit the check found fresh. */
+export const freshUnits = (regions: RegionFreshness[]): Set<string> =>
+  new Set(
+    regions.flatMap((region) =>
+      region.units.flatMap((unit) =>
+        unit.state === 'fresh' ? [`${region.path}\t${unit.unit}`] : [],
+      ),
+    ),
+  );
+
+const goneCounts = (regions: RegionFreshness[]): Map<string, number> => {
+  const counts = new Map<string, number>();
+  for (const region of regions) {
+    const gone = outOf(region, 'gone').length;
+    if (gone > 0) counts.set(region.path, gone);
+  }
+  return counts;
+};
+
 /**
- * Fails on a region whose copied doc sections changed or are gone, unless the baseline covers it
- * (`<region path>\t<units out of date>`, shrink-only). A region that can't be read as a built
- * region, a layer built from another repo, and units copied from another repo are warnings.
+ * Fails on a region that copies a section whose file or heading is gone, unless the baseline
+ * covers it (`<region path>\t<units gone>`, shrink-only). A stale region (a copy that differs), a
+ * region that can't be read as a built one, a layer built from another repo and units copied
+ * from another repo are warnings.
  */
 export const checkRegionFreshness = (root: string): RegionFreshnessResult => {
   const { layers, regions } = scanRegionFreshness(root);
   const { counts: baseline, malformed } = readBaseline(root, BASELINE_FILE, 1);
   const findings: Finding[] = malformed.map((line) => ({
     level: 'error',
-    message: `${BASELINE_FILE}: "${line}" is not <region path>\\t<units out of date> → rewrite it with regions --write-baseline`,
+    message: `${BASELINE_FILE}: "${line}" is not <region path>\\t<units gone> → rewrite it with regions --write-baseline`,
   }));
-  const counts = new Map<string, number>();
-  for (const region of regions) {
-    const stale = outOfDate(region).length;
-    if (stale > 0) counts.set(region.path, stale);
-  }
+  const counts = goneCounts(regions);
   const { over, under, covered } = compareBaseline(counts, baseline);
   const failing = new Set(over.map(({ key }) => key));
   for (const region of regions) {
     if (failing.has(region.path))
       findings.push({ level: 'error', message: describeRegion(region) });
-    else if (region.status === 'unverifiable')
+    else if (['gone', 'stale', 'unverifiable'].includes(region.status))
       findings.push({ level: 'warn', message: describeRegion(region) });
   }
   for (const { key, count, known } of under) {
@@ -380,14 +444,14 @@ export const checkRegionFreshness = (root: string): RegionFreshnessResult => {
       level: 'error',
       message:
         count === 0
-          ? `${BASELINE_FILE}: ${key} is no longer stale → delete its line`
-          : `${BASELINE_FILE}: ${key} has ${count} unit${count === 1 ? '' : 's'} out of date now, not ${known} → lower its count`,
+          ? `${BASELINE_FILE}: ${key} copies no gone section now → delete its line`
+          : `${BASELINE_FILE}: ${key} copies ${count} gone section${count === 1 ? '' : 's'} now, not ${known} → lower its count`,
     });
   }
   for (const layer of layers.filter((layer) => !layer.own)) {
     findings.push({
       level: 'warn',
-      message: `${layer.dir}: ${layer.regions} region${layer.regions === 1 ? '' : 's'} built from ${layer.project ? `${layer.project}'s` : 'another repo’s'} docs, not checked here (that repo's check covers them)`,
+      message: `${layer.dir}: ${layer.regions} region${layer.regions === 1 ? '' : 's'} built from ${layer.project ? `${layer.project}'s` : 'another repo’s'} docs, not checked here`,
     });
   }
   const elsewhere = regions.flatMap((region) =>
@@ -399,34 +463,30 @@ export const checkRegionFreshness = (root: string): RegionFreshnessResult => {
       message: `${elsewhere.length} doc unit${elsewhere.length === 1 ? '' : 's'} in ${OWN_REGIONS_DIR} copy other repos' docs (${[...new Set(elsewhere)].sort().join(', ')}), not checked here`,
     });
   }
-  const baselinedRegions = [...counts.keys()].filter(
+  const baselined = [...counts.keys()].filter(
     (key) => !failing.has(key) && (baseline.get(key) ?? 0) > 0,
   ).length;
   if (covered > 0) {
     findings.push({
       level: 'warn',
-      message: `${baselinedRegions} stale region${baselinedRegions === 1 ? '' : 's'} in ${BASELINE_FILE} (not blocking; rebuild ${baselinedRegions === 1 ? 'it' : 'them'} and shrink the baseline)`,
+      message: `${baselined} region${baselined === 1 ? '' : 's'} with gone sections in ${BASELINE_FILE} (not blocking; rebuild ${baselined === 1 ? 'it' : 'them'} and shrink the baseline)`,
     });
   }
+  if (findings.length > 0 && regions.length > 0)
+    findings.push({ level: 'warn', message: summariseRegions(regions) });
   return { findings, layers, regions };
 };
 
-/** Writes the baseline from today's stale regions: when there is none yet, or only to shrink it. */
+/** Writes the baseline from today's regions with gone sections: when there is none yet, or only to shrink it. */
 export const writeRegionFreshnessBaseline = (
   root: string,
-): { written: number; refused: string[] } => {
-  const counts = new Map<string, number>();
-  for (const region of scanRegionFreshness(root).regions) {
-    const stale = outOfDate(region).length;
-    if (stale > 0) counts.set(region.path, stale);
-  }
-  return writeBaseline(root, BASELINE_FILE, {
-    counts,
+): { written: number; refused: string[] } =>
+  writeBaseline(root, BASELINE_FILE, {
+    counts: goneCounts(scanRegionFreshness(root).regions),
     keyFields: 1,
     header: [
-      '# Stale Warden regions waiting for a rebuild: reported, not failed (@inixiative/config check).',
-      '# One per line: <region path>\\t<doc units out of date>. Rebuild the region and lower or delete its line.',
+      '# Warden regions copying doc sections that are gone, waiting for a rebuild: reported, not failed (@inixiative/config check).',
+      '# One per line: <region path>\\t<units gone>. Rebuild the region and lower or delete its line.',
       '# Rewrite after rebuilding: inixiative-config regions --write-baseline (it refuses to grow).',
     ],
   });
-};
