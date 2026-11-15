@@ -1,5 +1,13 @@
 import { describe, expect, test } from 'bun:test';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCommandLine, UsageError } from '../src/args';
@@ -23,7 +31,7 @@ const edit = (dir: string, path: string, from: string, to: string) => {
   writeFileSync(abs, text.replace(from, to));
 };
 
-const SUMMARY = 'not seen by this check';
+const SUMMARY = 'compared with the docs: part 4a only';
 
 /** Findings at one level; the summary line is tested on its own. */
 const messages = (dir: string, level: 'error' | 'warn') =>
@@ -52,10 +60,10 @@ describe('region freshness: fresh, partly checked, not checked', () => {
     ]);
   });
 
-  test('the summary counts every state and says what the check never reads', () => {
+  test('the summary counts every state and says what is compared, what is only scanned, and what is not seen', () => {
     const summary = checkRegionFreshness(join(fixtures, 'repo')).findings.at(-1)?.message;
     expect(summary).toBe(
-      '2 regions in .foundry/regions: 1 fresh, 1 partly checked; not seen by this check: code entries (part 4b), the model-written parts 1–3, recognise.md, GLOSSARY.md, and doc sections no region copies',
+      "2 regions in .foundry/regions: 1 fresh, 1 partly checked; compared with the docs: part 4a only; the rest of each region (parts 1–3, part 4b's code entries, recognise.md, region.json) and the set's GLOSSARY.md and registry.json are only scanned for retired names; doc sections no region copies are not seen",
     );
   });
 
@@ -131,7 +139,13 @@ describe('region freshness: gone is a warning too', () => {
 });
 
 describe('region freshness: a retired name in a region is a warning', () => {
-  const stale = join(import.meta.dir, 'fixtures', 'retired-terms', 'fail', 'stale-region');
+  const stale = join(
+    import.meta.dir,
+    'fixtures',
+    'retired-terms',
+    'fail',
+    'names-in-and-beside-regions',
+  );
 
   test('one line per region that says rebuild, never which line to edit; counted in the summary', () => {
     const { findings } = checkRegionFreshness(stale);
@@ -221,6 +235,88 @@ describe('region freshness: layers', () => {
     expect(layers.map((layer) => layer.dir)).toEqual(['.foundry/base/regions']);
     expect(regions).toEqual([]);
   });
+});
+
+describe('region freshness: nothing about regions throws or fails', () => {
+  // why: root reads anything, so a permission test means nothing there.
+  const asRoot = process.getuid?.() === 0;
+  const locked = (path: string, run: () => void) => {
+    chmodSync(path, 0o000);
+    try {
+      run();
+    } finally {
+      chmodSync(path, 0o755);
+    }
+  };
+  const warnings = (dir: string) => {
+    const { findings } = checkRegionFreshness(dir);
+    expect(findings.filter((finding) => finding.level === 'error')).toEqual([]);
+    return findings.map((finding) => finding.message);
+  };
+
+  test('.foundry/regions that is a file is one warning, and the CLI exits 0 without a trace', () => {
+    const dir = clone('no-regions');
+    mkdirSync(join(dir, '.foundry'));
+    writeFileSync(join(dir, '.foundry/regions'), 'not a directory\n');
+    expect(warnings(dir)).toEqual([
+      'regions: .foundry/regions is not a directory: no regions read there',
+    ]);
+    const run = Bun.spawnSync([
+      process.execPath,
+      join(import.meta.dir, '..', 'src', 'cli.ts'),
+      'regions',
+      dir,
+    ]);
+    expect(run.exitCode).toBe(0);
+    expect(run.stderr.toString()).toBe('');
+  });
+
+  test('chorus.layers naming a file is one warning naming it', () => {
+    const dir = clone('layered');
+    writeFileSync(
+      join(dir, '.foundry/project.json'),
+      JSON.stringify({
+        chorus: { layers: [{ regions: 'docs/own.md' }, { regions: '.foundry/regions' }] },
+      }),
+    );
+    expect(warnings(dir)).toContain(
+      'regions: docs/own.md is not a directory: no regions read there',
+    );
+  });
+
+  test.skipIf(asRoot)(
+    'an unreadable regions directory, region, knowledge.md, doc or project.json says what happened',
+    () => {
+      const dir = clone('repo');
+      locked(join(dir, '.foundry/regions'), () =>
+        expect(warnings(dir)).toContain(
+          "regions: can't read .foundry/regions (EACCES): no regions read there",
+        ),
+      );
+      locked(join(dir, '.foundry/regions/widgets'), () =>
+        expect(warnings(dir)).toContain(
+          "regions: can't read .foundry/regions/widgets (EACCES): not read as a region",
+        ),
+      );
+      locked(join(dir, '.foundry/regions/widgets/knowledge.md'), () =>
+        expect(warnings(dir)).toContain(
+          `region .foundry/regions/widgets can't be checked: can't read knowledge.md (EACCES) → ${REBUILD('widgets')}`,
+        ),
+      );
+      locked(join(dir, 'README.md'), () =>
+        expect(warnings(dir)).toContainEqual(
+          expect.stringContaining("doc:README.md#usage: can't read its doc (EACCES)"),
+        ),
+      );
+      mkdirSync(join(dir, '.foundry'), { recursive: true });
+      writeFileSync(join(dir, '.foundry/project.json'), '{}');
+      locked(join(dir, '.foundry/project.json'), () =>
+        expect(warnings(dir)).toContain(
+          "regions: can't read .foundry/project.json (EACCES): read .foundry/regions only",
+        ),
+      );
+    },
+  );
 });
 
 describe('the builder’s cut', () => {

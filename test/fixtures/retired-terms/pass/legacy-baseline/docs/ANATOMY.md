@@ -2,4 +2,5 @@
 
 | Retired | Became |
 |---|---|
-| Kastle | Kingdom |
+| Kastle, Castle | Kingdom |
+| RuntimeInstallation | a Signet enrollment |

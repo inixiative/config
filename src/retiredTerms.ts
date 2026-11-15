@@ -1,7 +1,15 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { compareBaseline, readBaseline, writeBaseline } from './baseline';
+import {
+  type Dirent,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
 import { unitCopies, unitPath } from './docUnits';
 import type { Finding } from './lib';
 
@@ -160,7 +168,13 @@ export type RetiredTermHit = {
 };
 
 const walk = (root: string, dir = '', out: string[] = []): string[] => {
-  for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
+  let entries: Dirent[] = [];
+  try {
+    entries = readdirSync(join(root, dir), { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
     const rel = dir ? `${dir}/${entry.name}` : entry.name;
     if (entry.isDirectory() && !SKIPPED.test(`${rel}/`)) walk(root, rel, out);
     else if (entry.isFile()) out.push(rel);
@@ -290,17 +304,22 @@ export const regionHitGroups = (
 };
 
 /**
- * `allow.txt`, one entry per line, each with a `#` reason above it:
+ * `allow.txt`: each entry under a `#` comment that gives its reason (one comment may head a block
+ * of entries; a blank line ends the block). Fields are tab-separated, exact, with no spaces
+ * around them:
  * - `<term>`: the term everywhere;
  * - `<path>\t<term>`: in one file, or under a directory when the path ends in `/` (a file that is
- *   history as a whole: a dated record, a review, a retired-names table);
- * - `<path>\t<term>\t"<snippet>"`: only the use the snippet quotes, on a line holding it (one
- *   history mention in a live doc, wherever the line moves). The snippet must contain the term.
- * A region's verbatim copy of an allowed line is allowed with it.
+ *   history as a whole: a dated record, a review, a retired-names table). Paths are exact: no globs;
+ * - `<path>\t<term>\t"<snippet>"`: one history mention in a live doc. The snippet holds the
+ *   retired name and words around it, and appears on exactly one line of the file; it allows the
+ *   use it quotes on that line, wherever the line moves.
+ * An entry that covers no use is stale and fails. A region's verbatim copy of an allowed line is
+ * allowed with it.
  */
-type AllowRule = { path: string; term: string; snippet?: string };
+type AllowRule = { line: number; path: string; term: RetiredTerm; snippet?: string; used: boolean };
 
-const ALLOW_FORMS = '<term>, <path>\\t<term> or <path>\\t<term>\\t"<snippet>" (tab-separated)';
+const ALLOW_FORMS = '<term>, <path>\\t<term> or <path>\\t<term>\\t"<snippet>"';
+const GLOB = /[*?[\]{}]/;
 
 const parseAllow = (root: string): { rules: AllowRule[]; problems: string[] } => {
   const abs = join(root, ALLOW_FILE);
@@ -308,43 +327,76 @@ const parseAllow = (root: string): { rules: AllowRule[]; problems: string[] } =>
   const problems: string[] = [];
   if (!existsSync(abs)) return { rules, problems };
   const ids = new Map(RETIRED_TERMS.map((term) => [term.id, term]));
+  let reasoned = false;
   for (const [index, raw] of readFileSync(abs, 'utf8').split('\n').entries()) {
-    const line = raw.trimEnd();
-    if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
-    const at = `${ALLOW_FILE}:${index + 1}`;
+    const line = raw.replace(/\r$/, '');
+    if (line.trim() === '') {
+      reasoned = false;
+      continue;
+    }
+    if (line.trimStart().startsWith('#')) {
+      reasoned = true;
+      continue;
+    }
+    const wrong = (why: string) =>
+      problems.push(`${ALLOW_FILE}:${index + 1}: ${why} → write ${ALLOW_FORMS}`);
     const fields = line.split('\t');
-    const wrong = (why: string) => problems.push(`${at}: ${why} → write ${ALLOW_FORMS}`);
-    if (fields.length > 3 || fields.some((field) => field.trim() === '')) {
-      wrong(`"${line}" is not an allow entry`);
-      continue;
-    }
-    const [path, term, quoted] =
-      fields.length === 1 ? ['', fields[0], undefined] : [fields[0], fields[1], fields[2]];
-    if (/\s/.test(term.trim())) {
-      wrong(`"${line}" is not an allow entry (its fields are not tab-separated)`);
-      continue;
-    }
-    const declared = ids.get(term.trim());
-    if (!declared) {
+    if (fields.length > 3 || fields.some((field) => field === '' || field !== field.trim())) {
       wrong(
-        `"${term.trim()}" is not a retired term (${RETIRED_TERMS.map((entry) => entry.id).join(', ')})`,
+        `"${line}" is not an allow entry (tab-separated fields, nothing empty, no spaces around them)`,
       );
       continue;
     }
-    if (quoted === undefined) {
-      rules.push({ path, term: declared.id });
+    const [path, id, quoted] = fields.length === 1 ? ['', fields[0]] : fields;
+    if (/\s/.test(id)) {
+      wrong(`"${line}" is not an allow entry (its fields are not tab-separated)`);
       continue;
     }
-    const snippet = /^"(.+)"$/.exec(quoted.trim())?.[1];
+    const term = ids.get(id);
+    if (!term) {
+      wrong(`"${id}" is not a retired term (${RETIRED_TERMS.map((entry) => entry.id).join(', ')})`);
+      continue;
+    }
+    if (GLOB.test(path)) {
+      wrong(`"${path}" is a pattern; paths are exact (a file, or a directory ending in /)`);
+      continue;
+    }
+    if (!reasoned) {
+      wrong(`"${line}" has no reason: put a # comment saying why above it`);
+      continue;
+    }
+    if (quoted === undefined) {
+      rules.push({ line: index + 1, path, term, used: false });
+      continue;
+    }
+    const snippet = /^"(.+)"$/.exec(quoted)?.[1];
     if (snippet === undefined) {
       wrong(`the snippet ${quoted} is not in double quotes`);
       continue;
     }
-    if (![...snippet.matchAll(declared.pattern)].length) {
-      wrong(`the snippet "${snippet}" does not contain ${declared.id}`);
+    const names = [...snippet.matchAll(term.pattern)].map((match) => match[0]);
+    if (names.length === 0) {
+      wrong(`the snippet "${snippet}" does not contain ${term.id}`);
       continue;
     }
-    rules.push({ path, term: declared.id, snippet });
+    if (!/[\p{L}\p{N}]/u.test(snippet.replace(term.pattern, ''))) {
+      wrong(`the snippet "${snippet}" is only the retired name: quote the words around it too`);
+      continue;
+    }
+    if (path === '' || path.endsWith('/')) {
+      wrong(`a snippet entry names one file, not "${path}"`);
+      continue;
+    }
+    const text = readText(join(root, path));
+    const lines =
+      text === null ? 0 : text.split('\n').filter((entry) => entry.includes(snippet)).length;
+    if (lines > 1) {
+      wrong(
+        `the snippet "${snippet}" is on ${lines} lines of ${path}: lengthen it so it names one`,
+      );
+      continue;
+    }
+    rules.push({ line: index + 1, path, term, snippet, used: false });
   }
   return { rules, problems };
 };
@@ -363,21 +415,36 @@ const quotes = (snippet: string, hit: RetiredTermHit) => {
   return false;
 };
 
-const allowedBy = (rules: AllowRule[]) => (hit: RetiredTermHit) =>
-  rules.some(
-    (rule) =>
-      rule.term === hit.term.id &&
-      (rule.snippet === undefined || quotes(rule.snippet, hit)) &&
-      (rule.path === '' ||
-        covers(rule.path, hit.path) ||
-        (hit.copiedFrom !== undefined && covers(rule.path, hit.copiedFrom.path))),
+/** Marks the rule that allows the hit as used; false when none does. */
+const allow = (rules: AllowRule[], hit: RetiredTermHit): boolean => {
+  const rule = rules.find(
+    (entry) =>
+      entry.term.id === hit.term.id &&
+      (entry.snippet === undefined || quotes(entry.snippet, hit)) &&
+      (entry.path === '' ||
+        covers(entry.path, hit.path) ||
+        (hit.copiedFrom !== undefined && covers(entry.path, hit.copiedFrom.path))),
   );
-
-/** Retired names in generated region files that no allow entry covers: the regions rule's to report. */
-export const regionRetiredHits = (root: string): RetiredTermHit[] => {
-  const allowed = allowedBy(parseAllow(root).rules);
-  return scanRetiredTerms(root).filter((hit) => regionFileOf(hit.path) && !allowed(hit));
+  if (rule) rule.used = true;
+  return rule !== undefined;
 };
+
+/** Every use, split into docs (this rule's) and generated regions (the regions rule's), after the allow list. */
+const classify = (root: string) => {
+  const { rules, problems } = parseAllow(root);
+  const docs: RetiredTermHit[] = [];
+  const regions: RetiredTermHit[] = [];
+  for (const hit of scanRetiredTerms(root)) {
+    if (allow(rules, hit)) continue;
+    (regionFileOf(hit.path) ? regions : docs).push(hit);
+  }
+  for (const rule of rules.filter((entry) => !entry.used))
+    problems.push(`${ALLOW_FILE}:${rule.line}: this allow covers nothing: delete it`);
+  return { docs, regions, problems };
+};
+
+/** Retired names in generated region files that no allow entry covers. */
+export const regionRetiredHits = (root: string): RetiredTermHit[] => classify(root).regions;
 
 const countByKey = (hits: RetiredTermHit[]): Map<string, number> => {
   const counts = new Map<string, number>();
@@ -388,12 +455,30 @@ const countByKey = (hits: RetiredTermHit[]): Map<string, number> => {
   return counts;
 };
 
-/**
- * The `# terms:` line of a baseline: the terms it was written against. A term added to the list
- * later is one whose uses predate the rule in that repo, so `--write-baseline` may add them. A
- * baseline without the line was written by a release whose list was `FIRST_TERMS`.
- */
-const TERMS_LINE = /^# terms: (.*)$/m;
+/** The baseline's `<path>\t<term>\t<count>` lines by `<path>\t<term>`, and any line that isn't one. */
+const BASELINE_LINE = /^([^\t]+\t[^\t]+)\t(\d+)$/;
+const readBaseline = (root: string) => {
+  const counts = new Map<string, number>();
+  const malformed: string[] = [];
+  const abs = join(root, BASELINE_FILE);
+  const text = existsSync(abs) ? readFileSync(abs, 'utf8') : '';
+  for (const line of text.split('\n').map((entry) => entry.trimEnd())) {
+    if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
+    const match = BASELINE_LINE.exec(line);
+    if (match) counts.set(match[1], Number(match[2]));
+    else malformed.push(line);
+  }
+  const terms = /^# terms: (.*)$/m.exec(text);
+  return {
+    exists: existsSync(abs),
+    counts,
+    malformed,
+    // A baseline without the line was written by the release whose list was FIRST_TERMS.
+    terms: new Set(terms ? terms[1].split(/\s+/).filter(Boolean) : FIRST_TERMS),
+  };
+};
+
+/** The terms of the release before the baseline recorded which terms it was written against. */
 const FIRST_TERMS = [
   'kastle',
   'castle',
@@ -404,44 +489,37 @@ const FIRST_TERMS = [
   'own-llm-keys',
   'foundry-roles',
 ];
-const baselineTerms = (root: string): Set<string> | null => {
-  const abs = join(root, BASELINE_FILE);
-  if (!existsSync(abs)) return null;
-  const match = TERMS_LINE.exec(readFileSync(abs, 'utf8'));
-  return new Set(match ? match[1].split(/\s+/).filter(Boolean) : FIRST_TERMS);
-};
-
-/** Uses in docs (every file but generated regions) that no allow entry covers. */
-const docHits = (root: string, rules: AllowRule[]): RetiredTermHit[] => {
-  const allowed = allowedBy(rules);
-  return scanRetiredTerms(root).filter((hit) => !regionFileOf(hit.path) && !allowed(hit));
-};
 
 export type RetiredTermsResult = {
   findings: Finding[];
   /** Uses in docs outside the allow list, before the baseline. */
   hits: RetiredTermHit[];
+  /** Uses in generated regions outside the allow list: the regions rule reports them. */
+  regionHits: RetiredTermHit[];
 };
 
 /**
- * Fails on a retired term in a doc that the baseline doesn't cover, on a malformed allow entry,
- * and on a baseline entry whose uses dropped (lower or delete it), so the baseline only shrinks.
- * Baselined uses are one warning. Generated regions are the regions rule's (warnings).
+ * Fails on a retired term in a doc that the baseline doesn't cover, on an allow entry that is
+ * malformed or covers nothing, and on a baseline entry whose uses dropped (lower or delete it), so
+ * the baseline only shrinks. Baselined uses are one warning. Generated regions are the regions
+ * rule's (warnings).
  */
 export const checkRetiredTerms = (root: string): RetiredTermsResult => {
-  const { rules, problems } = parseAllow(root);
-  const hits = docHits(root, rules);
+  const { docs: hits, regions: regionHits, problems } = classify(root);
   const counts = countByKey(hits);
-  const { counts: baseline, malformed } = readBaseline(root, BASELINE_FILE, 2);
+  const baseline = readBaseline(root);
   const findings: Finding[] = [
     ...problems.map((message) => ({ level: 'error' as const, message })),
-    ...malformed.map((line) => ({
+    ...baseline.malformed.map((line) => ({
       level: 'error' as const,
       message: `${BASELINE_FILE}: "${line}" is not <path>\\t<term>\\t<count> → rewrite it with terms --write-baseline`,
     })),
   ];
-  const { over, under, covered } = compareBaseline(counts, baseline);
-  for (const { key, known } of over) {
+  let covered = 0;
+  for (const [key, count] of counts) {
+    const known = baseline.counts.get(key) ?? 0;
+    covered += Math.min(count, known);
+    if (count <= known) continue;
     for (const hit of hits
       .filter((entry) => `${entry.path}\t${entry.term.id}` === key)
       .slice(known))
@@ -450,7 +528,9 @@ export const checkRetiredTerms = (root: string): RetiredTermsResult => {
         message: `retired term in ${hit.path}:${hit.line}: "${hit.text}" (${hit.term.id}) → ${hit.term.instead}`,
       });
   }
-  for (const { key, count, known } of under) {
+  for (const [key, known] of baseline.counts) {
+    const count = counts.get(key) ?? 0;
+    if (count >= known) continue;
     const [path, term] = key.split('\t');
     findings.push({
       level: 'error',
@@ -466,7 +546,7 @@ export const checkRetiredTerms = (root: string): RetiredTermsResult => {
       message: `${covered} retired-term use${covered === 1 ? '' : 's'} in ${BASELINE_FILE} (not blocking; fix the copy and shrink the baseline)`,
     });
   }
-  return { findings, hits };
+  return { findings, hits, regionHits };
 };
 
 /**
@@ -477,17 +557,35 @@ export const checkRetiredTerms = (root: string): RetiredTermsResult => {
  * `FIRST_TERMS` and rewritten with the line.
  */
 export const writeRetiredTermsBaseline = (root: string): { written: number; refused: string[] } => {
-  const counts = countByKey(docHits(root, parseAllow(root).rules));
-  const known = baselineTerms(root);
-  return writeBaseline(root, BASELINE_FILE, {
-    counts,
-    keyFields: 2,
-    mayGrow: (key) => known !== null && !known.has(key.split('\t')[1]),
-    header: [
-      '# Retired-term uses that predate the rule: reported, not failed (@inixiative/config check).',
-      '# One per line: <path>\\t<term>\\t<count>. Fix the copy and lower or delete its line.',
-      '# Rewrite after fixing: inixiative-config terms --write-baseline (it refuses to grow).',
-      `# terms: ${RETIRED_TERMS.map((term) => term.id).join(' ')}`,
-    ],
-  });
+  const counts = countByKey(classify(root).docs);
+  const path = join(root, BASELINE_FILE);
+  const baseline = readBaseline(root);
+  if (baseline.exists) {
+    const refused = [...counts]
+      .filter(
+        ([key, count]) =>
+          count > (baseline.counts.get(key) ?? 0) && baseline.terms.has(key.split('\t')[1]),
+      )
+      .map(
+        ([key, count]) =>
+          `${key.replace('\t', ' ')} ${count}× (baseline ${baseline.counts.get(key) ?? 0})`,
+      );
+    if (refused.length > 0) return { written: 0, refused };
+  }
+  const lines = [...counts]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, count]) => `${key}\t${count}`);
+  if (lines.length === 0) {
+    rmSync(path, { force: true });
+    return { written: 0, refused: [] };
+  }
+  const header = [
+    '# Retired-term uses that predate the rule: reported, not failed (@inixiative/config check).',
+    '# One per line: <path>\\t<term>\\t<count>. Fix the copy and lower or delete its line.',
+    '# Rewrite after fixing: inixiative-config terms --write-baseline (it refuses to grow).',
+    `# terms: ${RETIRED_TERMS.map((term) => term.id).join(' ')}`,
+  ];
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${[...header, ...lines].join('\n')}\n`);
+  return { written: lines.length, refused: [] };
 };

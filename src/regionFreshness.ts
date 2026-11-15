@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { type Dirent, lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import {
   cutDocUnits,
@@ -12,7 +12,7 @@ import {
   unitPath,
 } from './docUnits';
 import type { Finding } from './lib';
-import { regionHitGroups, regionRetiredHits } from './retiredTerms';
+import { type RetiredTermHit, regionHitGroups, regionRetiredHits } from './retiredTerms';
 
 /**
  * Region freshness: a Warden region's part 4 holds the doc sections it was built from, verbatim
@@ -23,7 +23,7 @@ import { regionHitGroups, regionRetiredHits } from './retiredTerms';
  */
 
 /** Where the builder installs a repo's own regions, and Foundry's default chorus layer. */
-export const OWN_REGIONS_DIR = '.foundry/regions';
+const OWN_REGIONS_DIR = '.foundry/regions';
 const PROJECT_SETTINGS = '.foundry/project.json';
 
 export type UnitState =
@@ -33,7 +33,9 @@ export type UnitState =
   /** The unit copies another repo's docs (a library the registry names). */
   | { unit: string; state: 'elsewhere'; library: string }
   /** `region.json` names the unit, but `knowledge.md` holds no copy of it. */
-  | { unit: string; state: 'uncopied' };
+  | { unit: string; state: 'uncopied' }
+  /** Its doc is there but can't be read (permissions, not a regular file). */
+  | { unit: string; state: 'unreadable'; why: string };
 
 export type RegionStatus =
   /** Every unit it names was compared and matches. */
@@ -44,7 +46,7 @@ export type RegionStatus =
   | 'not checked'
   /** A copy differs from its doc today (a warning). */
   | 'stale'
-  /** A unit's file or heading is gone (a failure). */
+  /** A unit's file or heading is gone (a warning). */
   | 'gone'
   /** The region can't be read as a built one (a warning). */
   | 'unverifiable';
@@ -69,25 +71,32 @@ export type RegionLayer = {
   regions: number;
 };
 
-const readText = (abs: string): string | null => {
+/** A file's text, or that it is missing, or why it can't be read: never a throw. */
+type Read<T> = { ok: T } | { missing: true } | { error: string };
+
+const failure = (error: unknown): string =>
+  (error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : String(error));
+
+const readText = (abs: string): Read<string> => {
   try {
-    return lstatSync(abs).isFile() ? normaliseNewlines(readFileSync(abs, 'utf8')) : null;
-  } catch {
-    return null;
+    if (!lstatSync(abs).isFile()) return { error: 'not a regular file' };
+    return { ok: normaliseNewlines(readFileSync(abs, 'utf8')) };
+  } catch (error) {
+    return failure(error) === 'ENOENT' ? { missing: true } : { error: failure(error) };
   }
 };
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
-const readObject = (abs: string): Record<string, unknown> | null => {
-  const text = readText(abs);
-  if (text === null) return null;
+const readObject = (abs: string): Read<Record<string, unknown>> => {
+  const read = readText(abs);
+  if (!('ok' in read)) return read;
   try {
-    const value: unknown = JSON.parse(text);
-    return isObject(value) ? value : null;
+    const value: unknown = JSON.parse(read.ok);
+    return isObject(value) ? { ok: value } : { error: 'not a JSON object' };
   } catch {
-    return null;
+    return { error: 'not JSON' };
   }
 };
 
@@ -96,9 +105,11 @@ const readObject = (abs: string): Record<string, unknown> | null => {
  * (`region-roster.ts` `chorusLayers`): `chorus.layers` as written, else the one `chorus.regions`
  * names, else `.foundry/regions`. Directories outside the repo are not its files.
  */
-const layerDirs = (root: string): string[] => {
-  const settings = readObject(join(root, PROJECT_SETTINGS));
-  const chorus = isObject(settings?.chorus) ? settings.chorus : {};
+const layerDirs = (root: string, problems: string[]): string[] => {
+  const read = readObject(join(root, PROJECT_SETTINGS));
+  if ('error' in read)
+    problems.push(`can't read ${PROJECT_SETTINGS} (${read.error}): read ${OWN_REGIONS_DIR} only`);
+  const chorus = 'ok' in read && isObject(read.ok.chorus) ? read.ok.chorus : {};
   const named = Array.isArray(chorus.layers)
     ? chorus.layers.flatMap((layer) =>
         isObject(layer) && typeof layer.regions === 'string' ? [layer.regions] : [],
@@ -110,18 +121,38 @@ const layerDirs = (root: string): string[] => {
   return [...new Set(dirs)];
 };
 
-/** Region directories under `dir` (each holding a `region.json`), sorted. */
-const regionIds = (root: string, dir: string): string[] => {
-  const abs = join(root, dir);
-  if (!existsSync(abs)) return [];
-  return readdirSync(abs, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && existsSync(join(abs, entry.name, 'region.json')))
-    .map((entry) => entry.name)
-    .sort();
+/** Region directories under `dir` (each holding a `region.json`), sorted; what can't be read is a problem. */
+const regionIds = (root: string, dir: string, problems: string[]): string[] => {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(join(root, dir), { withFileTypes: true });
+  } catch (error) {
+    const code = failure(error);
+    if (code !== 'ENOENT')
+      problems.push(
+        code === 'ENOTDIR'
+          ? `${dir} is not a directory: no regions read there`
+          : `can't read ${dir} (${code}): no regions read there`,
+      );
+    return [];
+  }
+  const ids: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    try {
+      statSync(join(root, dir, entry.name, 'region.json'));
+      ids.push(entry.name);
+    } catch (error) {
+      const code = failure(error);
+      if (code !== 'ENOENT')
+        problems.push(`can't read ${dir}/${entry.name} (${code}): not read as a region`);
+    }
+  }
+  return ids.sort();
 };
 
 /** The registry's `builtFrom.libraries` names: doc units under `<name>/` or `@scope/<name>/` are another repo's. */
-const librariesOf = (registry: Record<string, unknown> | null): string[] => {
+const librariesOf = (registry: Record<string, unknown> | undefined): string[] => {
   const builtFrom = isObject(registry?.builtFrom) ? registry.builtFrom : {};
   return isObject(builtFrom.libraries) ? Object.keys(builtFrom.libraries) : [];
 };
@@ -166,24 +197,28 @@ const lineDiff = (copy: string, today: string) => {
   return { added, removed, first: first.length > 80 ? `${first.slice(0, 77)}…` : first };
 };
 
-type DocCache = Map<string, { stripped: Map<string, DocUnit>; raw: Map<string, DocUnit> } | null>;
+type DocCut = { stripped: Map<string, DocUnit>; raw: Map<string, DocUnit> };
+type DocCache = Map<string, Read<DocCut>>;
 
-const unitsOf = (root: string, path: string, docs: DocCache) => {
-  if (!docs.has(path)) {
-    const text = readText(join(root, path));
-    if (text === null) docs.set(path, null);
-    else {
-      const byId = (units: DocUnit[]) => new Map(units.map((unit) => [unit.id, unit]));
-      const stripped = stripDoNotCopy(text);
-      const strippedUnits = byId(cutDocUnits(stripped, path));
-      docs.set(path, {
+const unitsOf = (root: string, path: string, docs: DocCache): Read<DocCut> => {
+  const cached = docs.get(path);
+  if (cached) return cached;
+  const read = readText(join(root, path));
+  let cut: Read<DocCut> = read as Read<DocCut>;
+  if ('ok' in read) {
+    const byId = (units: DocUnit[]) => new Map(units.map((unit) => [unit.id, unit]));
+    const stripped = stripDoNotCopy(read.ok);
+    const strippedUnits = byId(cutDocUnits(stripped, path));
+    cut = {
+      ok: {
         stripped: strippedUnits,
         // why: builders before "Do not copy" stripping cut the doc as written.
-        raw: stripped === text ? strippedUnits : byId(cutDocUnits(text, path)),
-      });
-    }
+        raw: stripped === read.ok ? strippedUnits : byId(cutDocUnits(read.ok, path)),
+      },
+    };
   }
-  return docs.get(path) ?? null;
+  docs.set(path, cut);
+  return cut;
 };
 
 const matches = (copy: { source?: string; text: string }, unit: DocUnit | undefined): boolean =>
@@ -202,13 +237,15 @@ const checkUnit = (
   if (path === null) return { unit, state: 'gone', missing: 'section' };
   if (relative(root, resolve(root, path)).startsWith('..'))
     return { unit, state: 'gone', missing: 'file' };
-  const cut = unitsOf(root, path, docs);
-  if (cut === null) {
+  const read = unitsOf(root, path, docs);
+  if ('error' in read) return { unit, state: 'unreadable', why: read.error };
+  if (!('ok' in read)) {
     const library = libraryOf(path, libraries);
     return library
       ? { unit, state: 'elsewhere', library }
       : { unit, state: 'gone', missing: 'file' };
   }
+  const cut = read.ok;
   if (copy === undefined) return { unit, state: 'uncopied' };
   const today = cut.stripped.get(unit) ?? cut.raw.get(unit);
   if (matches(copy, cut.stripped.get(unit)) || matches(copy, cut.raw.get(unit)))
@@ -241,15 +278,25 @@ const checkRegion = (
     units: [],
     unreadable: why,
   });
-  const meta = readObject(join(root, path, 'region.json'));
-  if (meta === null) return unreadable('region.json is not a JSON object');
+  const metaRead = readObject(join(root, path, 'region.json'));
+  if (!('ok' in metaRead))
+    return unreadable(
+      'error' in metaRead ? `can't read region.json (${metaRead.error})` : 'it has no region.json',
+    );
+  const meta = metaRead.ok;
   const sources = isObject(meta.sources) ? meta.sources : {};
   const docUnits = Array.isArray(sources.docUnits)
     ? sources.docUnits.filter((unit): unit is string => typeof unit === 'string')
     : null;
   if (docUnits === null) return unreadable('region.json names no sources.docUnits');
-  const knowledge = readText(join(root, path, 'knowledge.md'));
-  if (knowledge === null) return unreadable('it has no knowledge.md');
+  const knowledgeRead = readText(join(root, path, 'knowledge.md'));
+  if (!('ok' in knowledgeRead))
+    return unreadable(
+      'error' in knowledgeRead
+        ? `can't read knowledge.md (${knowledgeRead.error})`
+        : 'it has no knowledge.md',
+    );
+  const knowledge = knowledgeRead.ok;
   const copies = docUnits.length > 0 ? copiesOf(knowledge) : new Map();
   if (copies === null) return unreadable('knowledge.md has no part 4a (doc sections) to compare');
   const units = docUnits.map((unit) => checkUnit(root, unit, copies.get(unit), libraries, docs));
@@ -259,7 +306,7 @@ const checkRegion = (
     ? 'gone'
     : states.has('changed')
       ? 'stale'
-      : states.has('uncopied')
+      : states.has('uncopied') || states.has('unreadable')
         ? 'unverifiable'
         : checked === 0
           ? 'not checked'
@@ -277,6 +324,8 @@ const describeUnit = (unit: UnitState): string => {
       return `${unit.unit} gone (${unit.missing === 'file' ? 'no such file' : 'no such section today'})`;
     case 'uncopied':
       return `${unit.unit} has no copy in knowledge.md`;
+    case 'unreadable':
+      return `${unit.unit}: can't read its doc (${unit.why})`;
     default:
       return unit.unit;
   }
@@ -314,15 +363,18 @@ export const describeRegion = (region: RegionFreshness): string => {
     case 'stale':
       return `region ${region.path} is stale: ${outOf(region, 'changed').map(describeUnit).join('; ')} → ${rebuild(region)} when you can; not blocking`;
     default:
-      return `region ${region.path} can't be checked: ${outOf(region, 'uncopied')
+      return `region ${region.path} can't be checked: ${[
+        ...outOf(region, 'uncopied'),
+        ...outOf(region, 'unreadable'),
+      ]
         .map(describeUnit)
         .join('; ')} → ${rebuild(region)}`;
   }
 };
 
-/** What this rule never reads, said wherever its results are. */
-export const REGIONS_NOT_SEEN =
-  'not seen by this check: code entries (part 4b), the model-written parts 1–3, recognise.md, GLOSSARY.md, and doc sections no region copies';
+/** What this rule reads and doesn't, said wherever its results are. */
+const REGIONS_SEEN =
+  "compared with the docs: part 4a only; the rest of each region (parts 1–3, part 4b's code entries, recognise.md, region.json) and the set's GLOSSARY.md and registry.json are only scanned for retired names; doc sections no region copies are not seen";
 
 /** One line: how many regions are in each state. */
 export const summariseRegions = (regions: RegionFreshness[], naming = 0): string => {
@@ -339,18 +391,24 @@ export const summariseRegions = (regions: RegionFreshness[], naming = 0): string
     .filter(([, n]) => n > 0)
     .map(([status, n]) => `${n} ${status}`);
   if (naming > 0) counts.push(`${naming} naming something retired`);
-  return `${regions.length} region${regions.length === 1 ? '' : 's'} in ${OWN_REGIONS_DIR}: ${counts.join(', ')}; ${REGIONS_NOT_SEEN}`;
+  return `${regions.length} region${regions.length === 1 ? '' : 's'} in ${OWN_REGIONS_DIR}: ${counts.join(', ')}; ${REGIONS_SEEN}`;
 };
 
-/** Every region of the repo's own layer, compared; other layers named, not checked. */
-export const scanRegionFreshness = (root: string): Omit<RegionFreshnessResult, 'findings'> => {
+/** Every region of the repo's own layer, compared; other layers named, not checked; what can't be read, said. */
+const scanRegionFreshness = (root: string) => {
   const layers: RegionLayer[] = [];
   const regions: RegionFreshness[] = [];
+  const problems: string[] = [];
   const docs: DocCache = new Map();
-  for (const dir of layerDirs(root)) {
-    const ids = regionIds(root, dir);
+  for (const dir of layerDirs(root, problems)) {
+    const ids = regionIds(root, dir, problems);
     if (ids.length === 0) continue;
-    const registry = readObject(join(root, dir, 'registry.json'));
+    const registryRead = readObject(join(root, dir, 'registry.json'));
+    if ('error' in registryRead)
+      problems.push(
+        `can't read ${dir}/registry.json (${registryRead.error}): its libraries are unknown`,
+      );
+    const registry = 'ok' in registryRead ? registryRead.ok : undefined;
     const project = typeof registry?.project === 'string' ? registry.project : undefined;
     const own = dir === OWN_REGIONS_DIR;
     layers.push({ dir, own, project, regions: ids.length });
@@ -358,7 +416,7 @@ export const scanRegionFreshness = (root: string): Omit<RegionFreshnessResult, '
     const libraries = librariesOf(registry);
     for (const id of ids) regions.push(checkRegion(root, dir, id, libraries, docs));
   }
-  return { layers, regions };
+  return { layers, regions, problems };
 };
 
 export type RegionFreshnessResult = {
@@ -368,18 +426,23 @@ export type RegionFreshnessResult = {
 };
 
 /**
- * Every finding about regions is a warning: a region is rebuilt only where the builder runs, so a
- * repo's CI never fails on one. A stale copy, a gone section and a retired name each say to
- * rebuild the region; another repo's layer and units copied from another repo's docs are named
- * once; the summary counts the regions in each state.
+ * Every finding about regions is a warning, and nothing here throws: a region is rebuilt only
+ * where the builder runs, so a repo's CI never fails on one. A stale copy, a gone section and a
+ * retired name each say to rebuild the region; another repo's layer, units copied from another
+ * repo's docs and anything that can't be read are named; the summary counts the regions in each
+ * state. `retiredHits` are the retired-terms rule's region hits, when it has already scanned.
  */
-export const checkRegionFreshness = (root: string): RegionFreshnessResult => {
-  const { layers, regions } = scanRegionFreshness(root);
+export const checkRegionFreshness = (
+  root: string,
+  retiredHits: RetiredTermHit[] = regionRetiredHits(root),
+): RegionFreshnessResult => {
+  const { layers, regions, problems } = scanRegionFreshness(root);
   const findings: Finding[] = [];
   const warn = (message: string) => findings.push({ level: 'warn', message });
+  for (const problem of problems) warn(`regions: ${problem}`);
   for (const region of regions)
     if (['gone', 'stale', 'unverifiable'].includes(region.status)) warn(describeRegion(region));
-  const retired = regionHitGroups(regionRetiredHits(root));
+  const retired = regionHitGroups(retiredHits);
   for (const group of retired) warn(group.message);
   for (const layer of layers.filter((layer) => !layer.own))
     warn(

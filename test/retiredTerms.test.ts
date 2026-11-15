@@ -75,29 +75,86 @@ describe('retired terms: pass', () => {
       writeFileSync(join(dir, RETIRED_TERMS_DIR, 'allow.txt'), body);
       return errors(dir).filter((message) => message.includes('allow.txt'));
     };
-    const forms =
-      '→ write <term>, <path>\\t<term> or <path>\\t<term>\\t"<snippet>" (tab-separated)';
+    const forms = '→ write <term>, <path>\\t<term> or <path>\\t<term>\\t"<snippet>"';
+    const at = (line: number, why: string) =>
+      `${RETIRED_TERMS_DIR}/allow.txt:${line}: ${why} ${forms}`;
     expect(allow('# reason\ndocs/CONVERSATIONS.md\tsignet-may-take\tonce\n')).toEqual([
-      `${RETIRED_TERMS_DIR}/allow.txt:2: the snippet once is not in double quotes ${forms}`,
+      at(2, 'the snippet once is not in double quotes'),
     ]);
-    expect(allow('docs/CONVERSATIONS.md signet-may-take\n')).toEqual([
-      `${RETIRED_TERMS_DIR}/allow.txt:1: "docs/CONVERSATIONS.md signet-may-take" is not an allow entry (its fields are not tab-separated) ${forms}`,
+    expect(allow('# reason\ndocs/CONVERSATIONS.md signet-may-take\n')).toEqual([
+      at(
+        2,
+        '"docs/CONVERSATIONS.md signet-may-take" is not an allow entry (its fields are not tab-separated)',
+      ),
     ]);
-    expect(allow('docs/CONVERSATIONS.md\tsignet-maytake\n')).toEqual([
-      expect.stringMatching(/allow\.txt:1: "signet-maytake" is not a retired term \(kastle, /),
+    expect(allow('# reason\ndocs/CONVERSATIONS.md \tsignet-may-take\n')).toEqual([
+      at(
+        2,
+        '"docs/CONVERSATIONS.md \tsignet-may-take" is not an allow entry (tab-separated fields, nothing empty, no spaces around them)',
+      ),
     ]);
-    expect(allow('docs/CONVERSATIONS.md\tsignet-may-take\t"e"\n')).toEqual([
-      `${RETIRED_TERMS_DIR}/allow.txt:1: the snippet "e" does not contain signet-may-take ${forms}`,
+    expect(allow('# reason\ndocs/CONVERSATIONS.md\tsignet-maytake\n')).toEqual([
+      expect.stringMatching(/allow\.txt:2: "signet-maytake" is not a retired term \(kastle, /),
     ]);
+    expect(allow('# reason\ndocs/*.md\tsignet-may-take\n')).toEqual([
+      at(2, '"docs/*.md" is a pattern; paths are exact (a file, or a directory ending in /)'),
+    ]);
+    expect(allow('docs/CONVERSATIONS.md\tsignet-may-take\n')).toEqual([
+      at(
+        1,
+        '"docs/CONVERSATIONS.md\tsignet-may-take" has no reason: put a # comment saying why above it',
+      ),
+    ]);
+    expect(allow('# reason\ndocs/CONVERSATIONS.md\tsignet-may-take\t"e"\n')).toEqual([
+      at(2, 'the snippet "e" does not contain signet-may-take'),
+    ]);
+    expect(allow('# reason\ndocs/CONVERSATIONS.md\tsignet-may-take\t"`floor.mayTake`"\n')).toEqual([
+      at(
+        2,
+        'the snippet "`floor.mayTake`" is only the retired name: quote the words around it too',
+      ),
+    ]);
+    expect(allow('# reason\ndocs/\tsignet-may-take\t"(once `floor.mayTake`)"\n')).toEqual([
+      at(2, 'a snippet entry names one file, not "docs/"'),
+    ]);
+  });
+
+  test('an allow entry that covers nothing fails: delete it', () => {
+    const dir = clone('pass/history-snippet');
+    writeFileSync(
+      join(dir, RETIRED_TERMS_DIR, 'allow.txt'),
+      '# reason\ndocs/CONVERSATIONS.md\tsignet-may-take\t"(once `floor.mayTake`)"\ndocs/CONVERSATIONS.md\tsignet-grant-reach\t"(`grantReach.ts`)"\ndocs/OTHER.md\tkastle\n',
+    );
+    expect(errors(dir)).toEqual([
+      `${RETIRED_TERMS_DIR}/allow.txt:4: this allow covers nothing: delete it`,
+    ]);
+  });
+
+  test('a snippet on more than one line of its file fails: lengthen it so it names one', () => {
+    const dir = clone('pass/history-snippet');
+    const doc = join(dir, 'docs/CONVERSATIONS.md');
+    writeFileSync(
+      doc,
+      `${readFileSync(doc, 'utf8')}\nAgain: \`member.take\` (once \`floor.mayTake\`).\n`,
+    );
+    expect(errors(dir)).toContainEqual(
+      expect.stringContaining(
+        'the snippet "(once `floor.mayTake`)" is on 2 lines of docs/CONVERSATIONS.md: lengthen it so it names one',
+      ),
+    );
   });
 
   test('a snippet covers only the use it quotes, not another use on the same line', () => {
     const dir = clone('pass/history-snippet');
+    const doc = join(dir, 'docs/CONVERSATIONS.md');
     writeFileSync(
-      join(dir, 'docs/CONVERSATIONS.md'),
-      'A member has `member.take` (once `floor.mayTake`); `floor.mayTake` still gates it.\n',
+      doc,
+      readFileSync(doc, 'utf8').replace(
+        '(once `floor.mayTake`).',
+        '(once `floor.mayTake`); `floor.mayTake` still gates it.',
+      ),
     );
-    expect(errors(dir)).toEqual([expect.stringMatching(/CONVERSATIONS\.md:1: "floor\.mayTake"/)]);
+    expect(errors(dir)).toEqual([expect.stringMatching(/CONVERSATIONS\.md:3: "floor\.mayTake"/)]);
   });
 
   test('baselined uses warn, never fail', () => {
@@ -145,12 +202,12 @@ describe('retired terms: fail', () => {
   });
 
   test('a removed name in a generated region never fails terms: the regions rule warns about it', () => {
-    expect(errors('fail/stale-region')).toEqual([
+    expect(errors('fail/names-in-and-beside-regions')).toEqual([
       'retired term in .foundry/regions/README.md:3: "Kastle" (kastle) → Kingdom, owner, integration or Signet',
       'retired term in .foundry/warden-brief.md:3: "mayTake" (signet-may-take) → the member.take conversation permission (signet 0.18.0)',
     ]);
     expect(
-      scanRetiredTerms(join(fixtures, 'fail/stale-region')).filter((hit) =>
+      scanRetiredTerms(join(fixtures, 'fail/names-in-and-beside-regions')).filter((hit) =>
         hit.path.includes('regions/'),
       ).length,
     ).toBeGreaterThan(2);
@@ -159,7 +216,9 @@ describe('retired terms: fail', () => {
   test('a marketing word in a generated region is not checked there; a removed concept is', () => {
     expect(scanRetiredTerms(join(fixtures, 'pass/clean'))).toEqual([]);
     expect(
-      scanRetiredTerms(join(fixtures, 'fail/stale-region')).map((hit) => hit.term.removedConcept),
+      scanRetiredTerms(join(fixtures, 'fail/names-in-and-beside-regions')).map(
+        (hit) => hit.term.removedConcept,
+      ),
     ).not.toContain(undefined);
   });
 

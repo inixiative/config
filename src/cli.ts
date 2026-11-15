@@ -142,15 +142,9 @@ const offDefaultBranch = (cwd: string): { branch: string; main: string } | null 
 
 if (command === 'check') {
   const { findings } = inspect(dir, manifest, presetFlag);
-  process.exit(
-    report([
-      ...findings,
-      ...checkRetiredTerms(dir).findings,
-      ...checkRegionFreshness(dir).findings,
-    ]) > 0
-      ? 1
-      : 0,
-  );
+  const terms = checkRetiredTerms(dir);
+  const regions = checkRegionFreshness(dir, terms.regionHits);
+  process.exit(report([...findings, ...terms.findings, ...regions.findings]) > 0 ? 1 : 0);
 }
 
 if (command === 'terms') {
