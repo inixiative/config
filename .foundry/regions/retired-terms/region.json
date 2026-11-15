@@ -1,0 +1,30 @@
+{
+  "id": "retired-terms",
+  "title": "Retired product names",
+  "routing": "Is this about retired product names in public copy: the retired-terms rule that `inixiative-config check` runs (alone: `inixiative-config terms [dir] [--write-baseline]`), RETIRED_TERMS and their replacements in src/retiredTerms.ts, or a repo's scripts/ci/retired-terms/allow.txt and baseline.txt? Jobs: CI failed on an old name in a README, doc or package description, rewrite to the current name, allow a legitimate use, baseline uses that predate the rule, add a newly retired word, adopt the rule in a repo's own CI.",
+  "concepts": ["retired-terms"],
+  "tokens": 3947,
+  "tokenMethod": "chars/4",
+  "files": {
+    "recognise": {
+      "path": "recognise.md",
+      "tokens": 634,
+      "experimental": true,
+      "note": "a smaller recognise-only document; knowledge.md is the Warden document"
+    },
+    "knowledge": {
+      "path": "knowledge.md",
+      "tokens": 3947
+    }
+  },
+  "runsAgreed": 3,
+  "sources": {
+    "docs": ["README.md"],
+    "docUnits": ["doc:README.md#cli/retired-terms", "doc:README.md#ci"],
+    "catalogClusters": ["primitive-retired-terms"],
+    "codeEntries": 5,
+    "docMembers": 5
+  },
+  "bypassLines": 4,
+  "glossaryTerms": 16
+}

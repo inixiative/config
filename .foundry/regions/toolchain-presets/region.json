@@ -1,0 +1,30 @@
+{
+  "id": "toolchain-presets",
+  "title": "Shared toolchain presets",
+  "routing": "Is this about setting up or changing a repo's build, typecheck, lint or pre-commit config: extending @inixiative/config/tsconfig/{base,node,react}.json, biome/{base,react}.json or lefthook/base.yml, writing tsup.config.ts with node()/react() from @inixiative/config/tsup (CJS + ESM, dts, react externals), or a TypeScript 6.0 types / ignoreDeprecations failure?",
+  "concepts": ["toolchain-presets"],
+  "tokens": 5749,
+  "tokenMethod": "chars/4",
+  "files": {
+    "recognise": {
+      "path": "recognise.md",
+      "tokens": 859,
+      "experimental": true,
+      "note": "a smaller recognise-only document; knowledge.md is the Warden document"
+    },
+    "knowledge": {
+      "path": "knowledge.md",
+      "tokens": 5749
+    }
+  },
+  "runsAgreed": 3,
+  "sources": {
+    "docs": ["README.md"],
+    "docUnits": ["doc:README.md#presets", "doc:README.md#versions-json-the-bom"],
+    "catalogClusters": ["primitive-toolchain-presets"],
+    "codeEntries": 2,
+    "docMembers": 8
+  },
+  "bypassLines": 8,
+  "glossaryTerms": 22
+}

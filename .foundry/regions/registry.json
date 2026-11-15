@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "project": "config",
+  "builtFrom": {
+    "docs": ["README.md"],
+    "excluded": [
+      {
+        "path": "theme/fonts/LICENSES.md",
+        "kind": "vendored",
+        "reason": "The SIL OFL 1.1 texts of the shipped fonts, copied from Fontsource; licence text, not advice."
+      },
+      {
+        "path": "tsup.config.ts",
+        "kind": "excluded",
+        "reason": "This repo's own build config (cli and tsup entries), not a surface; the brief carries it."
+      }
+    ],
+    "catalog": "code read through the repo's Atlas map when it has one, else the plan's code scope; described with Foundry's catalog describer prompts",
+    "atlas": ".atlas/concepts.ts",
+    "libraries": {},
+    "method": "three independent model proposals, item-level majority vote (2 of 3), seams to the size ceiling, per-region authoring"
+  },
+  "concepts": [
+    {
+      "tag": "toolchain-presets",
+      "atlas": "primitive:toolchain-presets",
+      "description": "Extend the shared toolchain: tsconfig/{base,node,react}.json, biome/{base,react}.json, lefthook/base.yml and the node()/react() tsup presets from @inixiative/config/tsup (TS 6.0 types/ignoreDeprecations)",
+      "region": "toolchain-presets"
+    },
+    {
+      "tag": "theme",
+      "atlas": "primitive:theme",
+      "description": "Style with the brand theme CSS: theme/{public,status,domains,marketing}.css tokens, status badges, data-domain palettes, .marketing classes, fonts, load order and contrast",
+      "region": "brand-theme"
+    },
+    {
+      "tag": "ports",
+      "atlas": "primitive:ports",
+      "description": "Local dev ports from ports.json: service default + 100 x project block, assigning a block to a new project or service, portsFor/portConflicts and the ports command",
+      "region": "port-registry"
+    },
+    {
+      "tag": "bom",
+      "atlas": "primitive:bom",
+      "description": "versions.json (the BOM): bun, toolchain pins, required, lane blessed sets, consumers, candidates, holds field, and the Manifest helpers (loadManifest, laneSection, blessedVersions, laneOf...)",
+      "region": "version-coherence"
+    },
+    {
+      "tag": "check-and-sync",
+      "atlas": "primitive:check-and-sync",
+      "description": "Detect and repair one repo's drift from the BOM: inspect findings and fixes, check (read-only) and sync (apply, re-lock, bun update), what the CLI owns vs Renovate",
+      "region": "version-coherence"
+    },
+    {
+      "tag": "checkout-scan",
+      "atlas": "primitive:scan",
+      "description": "scan: discover every inixiative checkout under a root (discover, missingFor, trainPlan) and run check across them",
+      "region": "version-coherence"
+    },
+    {
+      "tag": "cli",
+      "atlas": "primitive:cli",
+      "description": "The inixiative-config bin surface: COMMANDS, per-command flags, parseCommandLine, UsageError (unknown or misplaced flag exits 2)",
+      "region": "version-coherence"
+    },
+    {
+      "tag": "lib-ci",
+      "atlas": "primitive:lib-ci",
+      "description": "The reusable .github/workflows/lib-ci.yml every lib repo calls: bun from .bun-version, cache-path/cache-key, frozen install, inixiative-config check, bun run check",
+      "region": "version-coherence"
+    },
+    {
+      "tag": "release-train",
+      "atlas": "primitive:train",
+      "description": "train: the per-lane release cascade under the machine-wide train lock: dependency order, bump/re-lock/check/commit/publish, candidates, train/adopt branches and Train-Adopt, promotion, consumers, config shipped last, --dry-run",
+      "region": "release-train"
+    },
+    {
+      "tag": "holds",
+      "atlas": "primitive:train",
+      "description": "BOM holds: keep a package's breaking line out of the blessed set, how train/check/scan treat a held version, lifting a hold (holdOf, holdLines)",
+      "region": "release-train"
+    },
+    {
+      "tag": "retired-terms",
+      "atlas": "primitive:retired-terms",
+      "description": "Retired product names in public copy: RETIRED_TERMS and replacements, scanned text, scripts/ci/retired-terms/{allow,baseline}.txt, the terms command and its rule in check",
+      "region": "retired-terms"
+    }
+  ],
+  "regions": [
+    {
+      "id": "toolchain-presets",
+      "tokens": 5749,
+      "recogniseTokens": 859,
+      "concepts": ["toolchain-presets"],
+      "runsAgreed": 3
+    },
+    {
+      "id": "brand-theme",
+      "tokens": 4745,
+      "recogniseTokens": 740,
+      "concepts": ["theme"],
+      "runsAgreed": 3
+    },
+    {
+      "id": "port-registry",
+      "tokens": 2632,
+      "recogniseTokens": 572,
+      "concepts": ["ports"],
+      "runsAgreed": 3
+    },
+    {
+      "id": "version-coherence",
+      "tokens": 11324,
+      "recogniseTokens": 1995,
+      "concepts": ["bom", "check-and-sync", "checkout-scan", "cli", "lib-ci"],
+      "runsAgreed": 3
+    },
+    {
+      "id": "release-train",
+      "tokens": 9088,
+      "recogniseTokens": 1406,
+      "concepts": ["release-train", "holds"],
+      "runsAgreed": 3
+    },
+    {
+      "id": "retired-terms",
+      "tokens": 3947,
+      "recogniseTokens": 634,
+      "concepts": ["retired-terms"],
+      "runsAgreed": 3
+    }
+  ],
+  "dropped": {}
+}

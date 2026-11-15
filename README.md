@@ -8,6 +8,12 @@ The shared toolchain and theme for the inixiative packages: tsconfig, Biome and 
 
 | Export | Use |
 | --- | --- |
+| `@inixiative/config/tsconfig/base.json` | the shared compiler options (ESNext, bundler resolution, `strict`, `noEmit`, `verbatimModuleSyntax`, `types: ["bun"]`); `check` holds a repo's `tsconfig.json` to extending a `tsconfig/` preset |
+| `@inixiative/config/tsconfig/node.json`, `tsconfig/react.json` | base plus `types: ["node"]` (picked only with `--preset=node`), or base plus the DOM libs and `jsx: react-jsx` (picked when the repo depends on `react`) |
+| `@inixiative/config/biome/base.json`, `biome/react.json` | the Biome formatter (2 spaces, width 100, single quotes, trailing commas, semicolons) and lint rules; react adds `useExhaustiveDependencies` as a warning. `check` holds `biome.json` to extending base (and react for a react repo) |
+| `@inixiative/config/lefthook/base.yml` | the shared pre-commit hooks (typecheck, Biome on staged TS files) that a repo's `lefthook.yml` extends |
+| `@inixiative/config/tsup` | `node(options)` and `react(options)` tsup presets (`src/index.ts` to CJS + ESM with dts and sourcemaps; react externalises `react`, `react-dom` and `react/jsx-runtime`); options override the base, and `dts: true` keeps the TS 6.0 fix below |
+| `@inixiative/config/versions.json`, `ports.json` | the BOM and the local port registry, both below |
 | `@inixiative/config/theme/public.css` | the brand: base, `--app-*` slots, status (`--success` / `--warning` / `--error`), UI (incl. `--shadow`) and type tokens, plus `@font-face` for Bricolage Grotesque, Instrument Sans and JetBrains Mono |
 | `@inixiative/config/theme/status.css` | the thread/work status layer (`--status-problem / attention / working / queued / done / idle / archived`) and the badge layer, for apps that show agent work |
 | `@inixiative/config/theme/domains.css` | four palettes on one structure, set with `data-domain="agentic \| building-blocks \| governance \| inixiative"` on any element; they nest |
@@ -42,8 +48,8 @@ Apps load the theme from this package at runtime, so it is a runtime `dependency
 One version of `@inixiative/config` names one coherent state of the inixiative packages:
 
 - `bun`: blessed runtime, written to `.bun-version` and `packageManager`
-- `toolchain`: exact pins for `@biomejs/biome`, `typescript`, `tsup`, `@types/bun`
-- `required`: toolchain packages every repo must carry
+- `toolchain`: exact pins for `@biomejs/biome`, `typescript`, `tsup`, `@types/bun`, `lefthook`
+- `required`: toolchain packages every repo must carry (biome, typescript, `@types/bun`; lefthook is required through the lefthook check instead)
 - `ecosystem`: the primitives lane's blessed, mutually-verified `@inixiative/*` set, plus this package
 - `agentic`: the agentic lane's blessed set
 - `consumers`: private repos that follow the blessed sets but never publish, keyed by GitHub `owner/repo`: `lanes` names the lanes each consumes, `upstream` the repo it syncs from
@@ -76,9 +82,17 @@ bunx @inixiative/config ports [project]
 bunx @inixiative/config terms [dir] [--write-baseline]
 ```
 
-`ports` prints each project's local ports from `ports.json` (also exported as `@inixiative/config/ports.json`). A project's port for a service is the service's usual default plus 100 times the project's block, so no two projects collide. Zealot alone sits at block 0, the defaults (Aron, 2026-10-20: it already runs there); every other project is off the defaults: Archive (block 7) serves HTTP on 4700 with Postgres on 6132; Kingdom (block 2) has web 3200, API 8200, Postgres 5632, Redis 6579. Reserved ports (macOS AirPlay on 5000 and 7000) are never assigned. Give a new project the next free block (never 0), and a new kind of service its usual default; the tests fail on any collision.
+`train` is the one command not run through `bunx`: run it from a git checkout of this repo (`bun src/cli.ts train …` there), because it refuses to train from a bunx or npm copy (see train).
+
+### ports
+
+`ports` prints each project's local ports from `ports.json` (also exported as `@inixiative/config/ports.json`). A project's port for a service is the service's usual default plus 100 times the project's block, so no two projects collide. Zealot alone sits at block 0, the defaults (Aron, 2026-10-20: it already runs there); every other project is off the defaults: template is block 1, kingdom 2, monorepo 3, foundry 5, oracle 6 and archive 7 (block 4 is free). Archive serves HTTP on 4700 with Postgres on 6132; Kingdom has web 3200, API 8200, Postgres 5632, Redis 6579. Reserved ports (macOS AirPlay on 5000 and 7000) are never assigned. Give a new project the next free block (never 0), and a new kind of service its usual default; the tests fail on any collision.
+
+### check
 
 `check` is read-only and exits non-zero on drift; run it in CI after a frozen-lockfile install. It verifies toolchain pins (declared once, at the root, pinned exactly: a workspace member declaring one is an error, and `bun.lock` must resolve each only to its pin, with no second copy), toolchain peer ranges (they must admit the pin and no older major; `sync` writes `>=<pin major>.<pin minor>.0`), `"latest"` ranges, `packageManager`/`.bun-version`, legacy `bun.lockb`, a committed (tracked, un-ignored) `bun.lock`, a gitignored `tmp/` (scratch space; `sync` adds `/tmp/*`, which keeps re-included files tracked), required scripts (`check`/`typecheck`/`lint`/`test`), lefthook (dep + `lefthook.yml` extending the shared hooks + `prepare` script; git repos only), stub `extends`, presence of this package, and for every `@inixiative/*` dependency (in the root or any workspace member, of either lane) that the declared range admits the blessed version and the lockfile resolves to it (the stale-lockfile class). A package with a candidate (one no hold covers) also accepts the candidate and anything between: a range admitting either passes, and so does a lock from the blessed version up to the candidate. A range that does not admit the blessed version is rewritten to `^<blessed>`, except an exact pin, which stays exact and moves to the blessed version. An npm alias (`"@inixiative/session-archive": "npm:@inixiative/archive@^0.2.1"`) is held to its target's blessed version and rewritten as an alias; `workspace:`, `file:` and `link:` ranges are a repo linking itself and are left alone.
+
+### Retired terms
 
 `check` also runs the **retired-terms** rule (alone: `terms`), which keeps public copy from rotting back to names the project retired. It reads text people read, never code identifiers: every Markdown, MDX, HTML and Astro file a repo tracks, and each `package.json` `description`. Fixtures, changelogs (history records the rename), `node_modules`, generated Warden regions (`.foundry/regions/`; fix their source docs) and root `dist`, `build`, `coverage` and `tmp` are skipped. The rule runs in `check` and `terms` only; `scan`, `sync` and the train are about package drift and don't run it. The list lives in `src/retiredTerms.ts`, each term with the word to use instead, and comes from the workspace CLAUDE.md "Dead concepts" and the copy brief's "Retired words":
 
@@ -99,9 +113,15 @@ Per repo, in `scripts/ci/retired-terms/` (the same shape as template's doc-fresh
 - `allow.txt` for legitimate uses: `<term>` allows it everywhere, `<path>\t<term>` in one file, or under a directory when the path ends in `/` (a retired-names table, a history doc). Stale copy never goes here.
 - `baseline.txt` for uses that predate the rule, `<path>\t<term>\t<count>`: reported as one warning, not failed. A use beyond the count fails, and so does a count that dropped (lower or delete the line), so the baseline only shrinks. `terms --write-baseline` writes it when there is none, and later only to shrink it: it refuses to add a use.
 
+### sync
+
 `sync` applies every fix (deleting member toolchain entries and their stale member links), re-locks via `bun install` (`--force` when a second toolchain copy survives), and runs `bun update` on stale `@inixiative/*` entries in the directory that declares them. It refuses to run on a dirty working tree without `--force`. The react preset is inferred from a `react` dependency; override with `--preset`. Missing scripts are filled with defaults; existing script bodies are never touched.
 
+### scan
+
 `scan` runs `check` across every inixiative checkout under a root directory, for every lane or just the one `--lane` names. Targets are derived from the BOM: lane packages match by package name (the root package or any workspace member, so a monorepo such as foundry is found by the packages it publishes), and consumers match by their `origin` GitHub repo. Directory names and local layout never need declaring: scan looks at each child of the root and one level into a child without a `package.json` (a workspace folder such as `team-workspace/`). Linked git worktrees are other sessions' branches and never targets; when several clones claim one package or repo, only those with an `origin` remote count, a clone directly under the root wins over one nested in a workspace folder, and if that still leaves more than one the target is reported ambiguous rather than guessed. Origin is the truth, not the checkout: scan fetches per repo and fails on checkouts behind origin (their findings describe a stale tree), fails when a BOM entry has no checkout at all, warns when a checkout sits on a non-default branch (its findings describe the branch, not what ships), and lists unmerged `claude/*` session branches.
+
+### train
 
 `train` is the release cascade, run from a git checkout of this repo; it refuses to train from a copy that isn't one (a bunx or npm cache). One train at a time per machine: it takes one machine-wide lock, `~/.inixiative/train.lock`, shared by every clone, worktree and lane, and refuses to start while another train holds it, naming the holder and the lock path. The lock is created atomically and records the holder's pid, hostname and process start time. A lock is stale, and taken over, when its process is gone, its pid now belongs to a different process, or the file can't be parsed. A lock from another host is never judged stale; if its train is gone, delete the file. The lock is released on exit and on SIGINT, SIGTERM or SIGHUP. `--dry-run` takes no lock. It walks every lane in order (primitives, then agentic), or only the lane `--lane` names. Origin is the truth: it refuses to run from a config checkout behind origin, and it fast-forwards clean checkouts to origin before working (dirty or diverged repos still skip). It only ships the default branch: a checkout on a feature branch is skipped whole: never re-locked, committed to, or published from.
 
@@ -115,7 +135,9 @@ Blessing is two-phase, so a dependent that needs work never deadlocks a release:
 
 The summary lists what was blessed, every candidate with what holds it (an incomplete adoption is marked so), every hold with its reason, and each pending adoption branch.
 
-**Holds.** A hold keeps a package's breaking line out of the blessed set while its dependents can't take it yet (signet 0.12 waiting on Kingdom's grants cutover), without stopping the package's own releases or anyone else's:
+### Holds
+
+A hold keeps a package's breaking line out of the blessed set while its dependents can't take it yet, without stopping the package's own releases or anyone else's. The BOM has no holds today; this one (signet 0.12, held until Kingdom's grants cutover) is an example from an earlier release:
 
 ```jsonc
 "holds": {
@@ -137,6 +159,8 @@ Every version at or above `below` is held; versions below it ride the train as u
 
 `scan` and the train's summary print each hold with its reason, and name a held candidate as not applied. Lifting a hold is deleting its entry: the next train records the held version found on npm at the local version (or applies the held candidate) and adopts it like any other.
 
+### Publishing, consumers and the config release
+
 A root package publishes with `npm publish`; a workspace member is packed with `bun pm pack`, which rewrites `workspace:` ranges to the versions being released, and the tarball is published with `npm publish`, so OTP prompts pass through either way. A package already on npm at its local version but neither blessed nor a candidate (published by hand, or by a train whose lane later failed) becomes a candidate on the next run, unless a hold covers that version. Likewise, an `@inixiative/config` version committed ahead of npm (a release whose publish failed) is published by the next run, even when it blesses nothing new.
 
 Consumers run once, after every selected lane, upstreams first, against the full blessed set: a consumer of both lanes ends coherent with both whichever lane ran. They get the same bump → re-lock → `check`, never a publish, and a passing re-lock is committed on their default branch, as a lane repo's is. Only a consumer that fails against candidates gets a branch (an adoption, above).
@@ -144,6 +168,8 @@ Consumers run once, after every selected lane, upstreams first, against the full
 A train never leaves a checkout dirty or off its default branch. It only works in a checkout it found clean, so a checkout that then fails is reset to HEAD (tracked and untracked files; ignored ones such as node_modules and `.env` stay) and re-installed from its lockfile. Every branch it makes is committed in a temporary worktree, removed when the train exits.
 
 When anything was recorded or blessed it then ships this package last, so the BOM names the new state: bumps its own patch version if npm already has the current one, blesses that version in the BOM, brings the `test/fixtures` consumers onto the blessed set, runs `check`, commits, publishes. Then every checkout the train re-locked (lane packages and consumers on their default branch, adoption branches in their worktrees) is re-locked onto that new `@inixiative/config` and committed, so none is left pinning the previous release. It never pushes unless asked: pass `--push` to push every repo it committed to and each adoption branch, then delete every other `train/*` branch, local and on origin, in each repo it moved (that repo is now on the whole target, so they are superseded). It opens no PRs. Without `--push` it prints the commands. Its worktrees, and the temporary dirs that hold them, are removed however the run ends. `--dry-run` walks the same plan and prints each step it would take (range rewrites, re-locks and checks, commits, adoption branches, publishes, BOM blessings, pushes) without running any of them; it only fetches and reads git state and `npm view`.
+
+### Flags and division of labor
 
 Each command accepts only its own flags. An unknown or misplaced flag (`--dryrun`, `--push` on `sync`) is a usage error and exits 2 before anything runs.
 
@@ -164,7 +190,7 @@ jobs:
     uses: inixiative/config/.github/workflows/lib-ci.yml@main
 ```
 
-`lib-ci.yml` pins bun from `.bun-version`, installs with `--frozen-lockfile` (kills the stale-lockfile class), runs `inixiative-config check .` (retired terms included), then the repo's own `bun run check`. A repo that doesn't use `lib-ci.yml` (template, Kingdom, Oracle, agent-session, gloss, Tribe) adopts the retired-terms rule by running `bunx inixiative-config terms .` from its own CI rules (template: a `scripts/ci/rules/retired-terms.sh` beside `doc-freshness.sh`).
+`lib-ci.yml` pins bun from `.bun-version`, optionally restores and saves one cache (inputs `cache-path` and `cache-key`, for a fixture a suite downloads; off when `cache-path` is empty), installs with `--frozen-lockfile` (kills the stale-lockfile class), runs `inixiative-config check .` (retired terms included), then the repo's own `bun run check`. A repo that doesn't use `lib-ci.yml` (template, Kingdom, Oracle, agent-session, gloss, Tribe) adopts the retired-terms rule by running `bunx inixiative-config terms .` from its own CI rules (template: a `scripts/ci/rules/retired-terms.sh` beside `doc-freshness.sh`).
 
 ## Release flow
 

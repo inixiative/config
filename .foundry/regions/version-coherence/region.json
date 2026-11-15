@@ -1,0 +1,45 @@
+{
+  "id": "version-coherence",
+  "title": "BOM, drift check and sync",
+  "routing": "Is this about keeping a repo coherent with the inixiative version manifest: versions.json (the BOM: bun, toolchain pins, required, the ecosystem/agentic blessed sets, consumers, candidates, holds) or its @inixiative/config/versions.json export, the drift rules `inixiative-config check` enforces and `sync` repairs (toolchain pins once at the root, peer floors, @inixiative/* ranges, stale bun.lock, required scripts), `scan` across every checkout under a root, the bin's per-command flags (exit 2), the reusable lib-ci.yml workflow, or who bumps what versus Renovate? Jobs: read which version is blessed, pick up new toolchain pins, fix a stale lockfile or a range that misses the blessed version, check every checkout in a folder, set up a lib repo's CI.",
+  "concepts": ["bom", "check-and-sync", "checkout-scan", "cli", "lib-ci"],
+  "tokens": 11324,
+  "tokenMethod": "chars/4",
+  "files": {
+    "recognise": {
+      "path": "recognise.md",
+      "tokens": 1995,
+      "experimental": true,
+      "note": "a smaller recognise-only document; knowledge.md is the Warden document"
+    },
+    "knowledge": {
+      "path": "knowledge.md",
+      "tokens": 11324
+    }
+  },
+  "runsAgreed": 3,
+  "sources": {
+    "docs": ["README.md"],
+    "docUnits": [
+      "doc:README.md#preface",
+      "doc:README.md#versions-json-the-bom",
+      "doc:README.md#cli/check",
+      "doc:README.md#cli/sync",
+      "doc:README.md#cli/flags-and-division-of-labor",
+      "doc:README.md#cli/scan",
+      "doc:README.md#cli",
+      "doc:README.md#ci"
+    ],
+    "catalogClusters": [
+      "primitive-bom",
+      "primitive-check-and-sync",
+      "primitive-cli",
+      "primitive-lib-ci",
+      "primitive-scan"
+    ],
+    "codeEntries": 28,
+    "docMembers": 23
+  },
+  "bypassLines": 12,
+  "glossaryTerms": 27
+}
