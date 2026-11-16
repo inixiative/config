@@ -39,6 +39,7 @@ import {
   trainPlan,
   writeManifest,
 } from './lib';
+import { checkUnresolvedMergeConflicts } from './mergeConflicts';
 import { type Project, portsFor, projects } from './ports';
 import { checkRegionFreshness, describeRegion } from './regionFreshness';
 import { checkRetiredTerms, writeRetiredTermsBaseline } from './retiredTerms';
@@ -144,7 +145,10 @@ if (command === 'check') {
   const { findings } = inspect(dir, manifest, presetFlag);
   const terms = checkRetiredTerms(dir);
   const regions = checkRegionFreshness(dir, { hits: terms.regionHits, problems: [] });
-  process.exit(report([...findings, ...terms.findings, ...regions.findings]) > 0 ? 1 : 0);
+  const conflicts = checkUnresolvedMergeConflicts(dir);
+  process.exit(
+    report([...findings, ...conflicts, ...terms.findings, ...regions.findings]) > 0 ? 1 : 0,
+  );
 }
 
 if (command === 'terms') {

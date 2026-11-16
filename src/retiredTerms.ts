@@ -138,10 +138,15 @@ const BASELINE_FILE = `${RETIRED_TERMS_DIR}/baseline.txt`;
 
 const TEXT_FILE = /\.(md|mdx|html|astro)$/i;
 const PUBLIC_FILE = /(^|\/)README[^/]*\.md$|\.(html|astro|mdx)$/i;
-// Skipped: dependencies and build output at the root; fixtures (they hold the words on purpose);
-// changelogs (history records the rename).
-const SKIPPED =
-  /(^|\/)(node_modules|\.git|\.worktrees|fixtures|rule-violations)\/|^(dist|build|coverage|tmp)\/|(^|\/)CHANGELOG[^/]*\.md$/i;
+/** Dependencies, git's own files and build output at the root: no rule reads them. */
+export const DEPENDENCIES_AND_BUILD_OUTPUT =
+  /(^|\/)(node_modules|\.git|\.worktrees)\/|^(dist|build|coverage|tmp)\//i;
+// Also skipped for retired terms: fixtures (they hold the words on purpose); changelogs (history
+// records the rename).
+const SKIPPED = new RegExp(
+  `${DEPENDENCIES_AND_BUILD_OUTPUT.source}|(^|/)(fixtures|rule-violations)/|(^|/)CHANGELOG[^/]*\\.md$`,
+  'i',
+);
 /**
  * The files the region builder writes, in any regions directory (`.foundry/regions`, or a base
  * layer such as Kingdom's `.foundry/template/regions`): each region's three, and the set's own.
@@ -167,7 +172,7 @@ export type RetiredTermHit = {
   copiedFrom?: { unit: string; path: string };
 };
 
-const walk = (root: string, dir = '', out: string[] = []): string[] => {
+const walk = (root: string, skipped: RegExp, dir = '', out: string[] = []): string[] => {
   let entries: Dirent[] = [];
   try {
     entries = readdirSync(join(root, dir), { withFileTypes: true });
@@ -176,7 +181,7 @@ const walk = (root: string, dir = '', out: string[] = []): string[] => {
   }
   for (const entry of entries) {
     const rel = dir ? `${dir}/${entry.name}` : entry.name;
-    if (entry.isDirectory() && !SKIPPED.test(`${rel}/`)) walk(root, rel, out);
+    if (entry.isDirectory() && !skipped.test(`${rel}/`)) walk(root, skipped, rel, out);
     else if (entry.isFile()) out.push(rel);
   }
   return out;
@@ -186,7 +191,7 @@ const errorCode = (error: unknown): string =>
   (error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : String(error));
 
 /** A regular file's text; a symlink, directory or vanished path reads as nothing. */
-const readText = (abs: string): string | null => {
+export const readText = (abs: string): string | null => {
   try {
     return lstatSync(abs).isFile() ? readFileSync(abs, 'utf8') : null;
   } catch {
@@ -194,8 +199,11 @@ const readText = (abs: string): string | null => {
   }
 };
 
-/** Tracked files in a git checkout (ignored and generated files never ship); every file otherwise. */
-const listFiles = (root: string): string[] => {
+/**
+ * The repo's files, sorted, that `skipped` doesn't match: tracked and untracked-but-not-ignored in
+ * a git checkout (ignored and generated files never ship); every file otherwise.
+ */
+export const listRepoFilesNotSkipped = (root: string, skipped: RegExp): string[] => {
   if (existsSync(join(root, '.git'))) {
     const listed = spawnSync(
       'git',
@@ -205,9 +213,15 @@ const listFiles = (root: string): string[] => {
         encoding: 'utf8',
       },
     );
-    if (listed.status === 0) return listed.stdout.split('\0').filter(Boolean);
+    if (listed.status === 0)
+      return listed.stdout
+        .split('\0')
+        .filter((path) => path !== '' && !skipped.test(path))
+        .sort();
   }
-  return walk(root);
+  return walk(root, skipped)
+    .filter((path) => !skipped.test(path))
+    .sort();
 };
 
 const lineOf = (text: string, index: number): number => text.slice(0, index).split('\n').length;
@@ -218,8 +232,8 @@ const lineOf = (text: string, index: number): number => text.slice(0, index).spl
  */
 export const scanRetiredTerms = (root: string): RetiredTermHit[] => {
   const hits: RetiredTermHit[] = [];
-  for (const path of listFiles(root).sort()) {
-    if (SKIPPED.test(path) || path.startsWith(`${RETIRED_TERMS_DIR}/`)) continue;
+  for (const path of listRepoFilesNotSkipped(root, SKIPPED)) {
+    if (path.startsWith(`${RETIRED_TERMS_DIR}/`)) continue;
     const generated = regionFileOf(path) !== null;
     const isManifest = !generated && /(^|\/)package\.json$/.test(path);
     if (!generated && !isManifest && !TEXT_FILE.test(path)) continue;
