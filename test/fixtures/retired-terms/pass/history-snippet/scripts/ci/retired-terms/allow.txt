@@ -1,0 +1,3 @@
+# Each line is one history mention in a live doc: the snippet quotes the use itself.
+docs/CONVERSATIONS.md	signet-may-take	"(once `floor.mayTake`)"
+docs/CONVERSATIONS.md	signet-grant-reach	"(`grantReach.ts`)"

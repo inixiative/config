@@ -1,7 +1,7 @@
 import { type ParseArgsConfig, parseArgs } from 'node:util';
 import { isLane, type Lane, type Preset } from './lib';
 
-export const COMMANDS = ['check', 'sync', 'scan', 'train', 'ports', 'terms'] as const;
+export const COMMANDS = ['check', 'sync', 'scan', 'train', 'ports', 'terms', 'regions'] as const;
 export type Command = (typeof COMMANDS)[number];
 
 const PRESETS: readonly Preset[] = ['base', 'node', 'react'];
@@ -18,6 +18,7 @@ const OPTIONS = {
   train: { lane, push: flag, 'dry-run': flag, 'adopt-check-timeout': { type: 'string' } },
   ports: {},
   terms: { 'write-baseline': flag },
+  regions: {},
 } as const;
 
 export type CommandLine = {

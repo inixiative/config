@@ -1,0 +1,23 @@
+{
+  "id": "locks",
+  "title": "Locks",
+  "routing": "Is this about locks?",
+  "concepts": [
+    "locks"
+  ],
+  "tokens": 267,
+  "tokenMethod": "chars/4",
+  "sources": {
+    "docs": [
+      "docs/guide.md",
+      "lib/README.md"
+    ],
+    "docUnits": [
+      "doc:docs/guide.md#locks",
+      "doc:lib/README.md#install"
+    ],
+    "catalogClusters": [],
+    "codeEntries": 0,
+    "docMembers": 0
+  }
+}

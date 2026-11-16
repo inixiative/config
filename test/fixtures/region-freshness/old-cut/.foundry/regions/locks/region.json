@@ -1,0 +1,21 @@
+{
+  "id": "locks",
+  "title": "Locks",
+  "routing": "Is this about locks?",
+  "concepts": [
+    "locks"
+  ],
+  "tokens": 228,
+  "tokenMethod": "chars/4",
+  "sources": {
+    "docs": [
+      "docs/guide.md"
+    ],
+    "docUnits": [
+      "doc:docs/guide.md#locks"
+    ],
+    "catalogClusters": [],
+    "codeEntries": 0,
+    "docMembers": 0
+  }
+}

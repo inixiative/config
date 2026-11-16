@@ -1,5 +1,6 @@
-# Legitimate uses of retired terms (@inixiative/config check). <term> allows it everywhere;
-# <path>	<term> in one file, or under a directory when the path ends in /. Stale copy never goes here.
+# Legitimate uses of retired terms (@inixiative/config check), each under a # reason. <term> allows it
+# everywhere; <path>	<term> in one file, or under a directory when the path ends in /;
+# <path>	<term>	"<snippet>" the one use the snippet quotes. Stale copy never goes here.
 
 # README.md documents the retired-terms rule, so it names every term.
 README.md	kastle
@@ -8,5 +9,13 @@ README.md	runtime-keys
 README.md	medical-demo
 README.md	retired-workspaces
 README.md	foundry-oracle
-README.md	own-llm-keys
 README.md	foundry-roles
+README.md	signet-grant-terms
+README.md	signet-threads-resource
+README.md	signet-may-take
+README.md	signet-grant-reach
+
+# The retired-terms region's prose and the glossary describe the rule, so they name Kastle
+# (the region's copies of README.md are allowed with README.md).
+.foundry/regions/retired-terms/	kastle
+.foundry/regions/GLOSSARY.md	kastle

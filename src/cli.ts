@@ -39,7 +39,9 @@ import {
   trainPlan,
   writeManifest,
 } from './lib';
+import { checkUnresolvedMergeConflicts } from './mergeConflicts';
 import { type Project, portsFor, projects } from './ports';
+import { checkRegionFreshness, describeRegion } from './regionFreshness';
 import { checkRetiredTerms, writeRetiredTermsBaseline } from './retiredTerms';
 
 let commandLine: CommandLine;
@@ -49,7 +51,7 @@ try {
   if (!(error instanceof UsageError)) throw error;
   console.error(`✗ ${error.message}`);
   console.error(
-    'Usage: inixiative-config check [dir] [--preset=base|node|react]\n       inixiative-config sync [dir] [--preset=base|node|react] [--force] [--no-install]\n       inixiative-config scan [root] [--lane=primitives|agentic]\n       inixiative-config train [root] [--lane=primitives|agentic] [--push] [--dry-run]\n       inixiative-config ports [project]\n       inixiative-config terms [dir] [--write-baseline]',
+    'Usage: inixiative-config check [dir] [--preset=base|node|react]\n       inixiative-config sync [dir] [--preset=base|node|react] [--force] [--no-install]\n       inixiative-config scan [root] [--lane=primitives|agentic]\n       inixiative-config train [root] [--lane=primitives|agentic] [--push] [--dry-run]\n       inixiative-config ports [project]\n       inixiative-config terms [dir] [--write-baseline]\n       inixiative-config regions [dir]',
   );
   process.exit(2);
 }
@@ -141,7 +143,12 @@ const offDefaultBranch = (cwd: string): { branch: string; main: string } | null 
 
 if (command === 'check') {
   const { findings } = inspect(dir, manifest, presetFlag);
-  process.exit(report([...findings, ...checkRetiredTerms(dir).findings]) > 0 ? 1 : 0);
+  const terms = checkRetiredTerms(dir);
+  const regions = checkRegionFreshness(dir, { hits: terms.regionHits, problems: [] });
+  const conflicts = checkUnresolvedMergeConflicts(dir);
+  process.exit(
+    report([...findings, ...conflicts, ...terms.findings, ...regions.findings]) > 0 ? 1 : 0,
+  );
 }
 
 if (command === 'terms') {
@@ -156,6 +163,16 @@ if (command === 'terms') {
     process.exit(0);
   }
   process.exit(report(checkRetiredTerms(dir).findings) > 0 ? 1 : 0);
+}
+
+if (command === 'regions') {
+  const { findings, regions, summary } = checkRegionFreshness(dir);
+  for (const region of regions)
+    if (['fresh', 'partly checked', 'not checked'].includes(region.status))
+      console.log(`${region.status === 'fresh' ? '✓' : '·'} ${describeRegion(region)}`);
+  if (summary && !findings.some((finding) => finding.message === summary))
+    console.log(`· ${summary}`);
+  process.exit(report(findings) > 0 ? 1 : 0);
 }
 
 const laneLabel = (checkout: Checkout): string =>

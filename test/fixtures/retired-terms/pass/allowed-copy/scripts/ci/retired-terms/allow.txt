@@ -1,0 +1,2 @@
+# History records the 0.12 terms.
+docs/history/	signet-grant-terms

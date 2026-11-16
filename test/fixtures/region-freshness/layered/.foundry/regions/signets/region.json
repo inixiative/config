@@ -1,0 +1,21 @@
+{
+  "id": "signets",
+  "title": "Signets",
+  "routing": "Is this about signets?",
+  "concepts": [
+    "signets"
+  ],
+  "tokens": 227,
+  "tokenMethod": "chars/4",
+  "sources": {
+    "docs": [
+      "docs/own.md"
+    ],
+    "docUnits": [
+      "doc:docs/own.md#signets"
+    ],
+    "catalogClusters": [],
+    "codeEntries": 0,
+    "docMembers": 0
+  }
+}

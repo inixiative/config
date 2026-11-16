@@ -80,6 +80,7 @@ bunx @inixiative/config scan  [root] [--lane=primitives|agentic]
 bunx @inixiative/config train [root] [--lane=primitives|agentic] [--push] [--dry-run] [--adopt-check-timeout=<seconds>]
 bunx @inixiative/config ports [project]
 bunx @inixiative/config terms [dir] [--write-baseline]
+bunx @inixiative/config regions [dir]
 ```
 
 `train` is the one command not run through `bunx`: run it from a git checkout of this repo (`bun src/cli.ts train …` there), because it refuses to train from a bunx or npm copy (see train).
@@ -92,26 +93,79 @@ bunx @inixiative/config terms [dir] [--write-baseline]
 
 `check` is read-only and exits non-zero on drift; run it in CI after a frozen-lockfile install. It verifies toolchain pins (declared once, at the root, pinned exactly: a workspace member declaring one is an error, and `bun.lock` must resolve each only to its pin, with no second copy), toolchain peer ranges (they must admit the pin and no older major; `sync` writes `>=<pin major>.<pin minor>.0`), `"latest"` ranges, `packageManager`/`.bun-version`, legacy `bun.lockb`, a committed (tracked, un-ignored) `bun.lock`, a gitignored `tmp/` (scratch space; `sync` adds `/tmp/*`, which keeps re-included files tracked), required scripts (`check`/`typecheck`/`lint`/`test`), lefthook (dep + `lefthook.yml` extending the shared hooks + `prepare` script; git repos only), stub `extends`, presence of this package, and for every `@inixiative/*` dependency (in the root or any workspace member, of either lane) that the declared range admits the blessed version and the lockfile resolves to it (the stale-lockfile class). A package with a candidate (one no hold covers) also accepts the candidate and anything between: a range admitting either passes, and so does a lock from the blessed version up to the candidate. A range that does not admit the blessed version is rewritten to `^<blessed>`, except an exact pin, which stays exact and moves to the blessed version. An npm alias (`"@inixiative/session-archive": "npm:@inixiative/archive@^0.2.1"`) is held to its target's blessed version and rewritten as an alias; `workspace:`, `file:` and `link:` ranges are a repo linking itself and are left alone.
 
+**Unresolved merge conflicts.** `check` fails on every conflict block git left in a file: a line that starts with seven `<` or seven `>` followed by a space or the line's end, reported once per block as `<path>:<line of the opening marker>`. A line of seven `=` (or the diff3 base marker, seven `|`) belongs to the block it sits in and is never a finding alone, since it is also a Markdown heading underline. Why: on 2026-11-16 a merge of main into a Kingdom branch committed markers into 15 docs, and the repo's full check passed because nothing read docs for them. It reads every text file the repo tracks or has untracked and not ignored, code, JSON, YAML, Prisma schemas, lockfiles, fixtures and changelogs included; only `node_modules`, root `dist`, `build`, `coverage` and `tmp`, and binary files are skipped. A marker inside a fenced code block fails too: a committed marker is a leftover wherever it is. There is no allow list or baseline. To show a marker in a doc, indent it or put it mid-line; tests build marker lines at run time.
+
 ### Retired terms
 
-`check` also runs the **retired-terms** rule (alone: `terms`), which keeps public copy from rotting back to names the project retired. It reads text people read, never code identifiers: every Markdown, MDX, HTML and Astro file a repo tracks, and each `package.json` `description`. Fixtures, changelogs (history records the rename), `node_modules`, generated Warden regions (`.foundry/regions/`; fix their source docs) and root `dist`, `build`, `coverage` and `tmp` are skipped. The rule runs in `check` and `terms` only; `scan`, `sync` and the train are about package drift and don't run it. The list lives in `src/retiredTerms.ts`, each term with the word to use instead, and comes from the workspace CLAUDE.md "Dead concepts" and the copy brief's "Retired words":
+`check` also runs the **retired-terms** rule (alone: `terms`), which keeps public copy from rotting back to names the project retired. It reads text people read, never code identifiers: every Markdown, MDX, HTML and Astro file a repo tracks, each `package.json` `description`, and the files the region builder writes (below). Fixtures, changelogs (history records the rename), `node_modules` and root `dist`, `build`, `coverage` and `tmp` are skipped. The rule runs in `check` and `terms` only; `scan`, `sync` and the train are about package drift and don't run it. The list lives in `src/retiredTerms.ts`, each term with the word to use instead, and comes from the workspace CLAUDE.md "Dead concepts", the copy brief's "Retired words" and the breaking sections of package changelogs:
 
 | Term | Checked in | Use instead |
 | --- | --- | --- |
-| Kastle, Castle (capitalised) | every doc | Kingdom, owner, integration or Signet |
-| `RuntimeInstallation`, `kingdom_runtime_` | every doc | a Signet enrollment |
-| `signetDemo`, `medicalQuestionStep` | every doc | nothing; demos live in template-workbench |
-| `kingdom-workspace`, `foundry-lab`, `native-candidate` | every doc | the canonical repos |
+| Kastle, Castle (capitalised) | every doc, regions | Kingdom, owner, integration or Signet |
+| `RuntimeInstallation`, `kingdom_runtime_` | every doc, regions | a Signet enrollment |
+| `signetDemo`, `medicalQuestionStep` | every doc, regions | nothing; demos live in template-workbench |
+| `kingdom-workspace`, `foundry-lab`, `native-candidate` | every doc, regions | the canonical repos |
 | foundry-oracle | every doc | Foundry and Oracle, two products |
 | "your own LLM/API keys" | every doc | your own subscriptions |
 | Cartographer, Librarian, Artificer, Steward (capitalised) | READMEs, package descriptions, site pages only | say what it does; Foundry's code still has a Librarian and a Cartographer |
+| `threadsTerms`, `threadsTermsSchema`, `grantTermsSchema`, `grantTermsFitKind`, `narrowsThreadsTerms`, `meetThreadsTerms`, Kingdom's `termsNarrow`, and the `thread*Schema` term schemas (signet 0.18.0) | every doc, regions | conversation permissions picked on the grant: `member.log`, `member.wake`, `member.take`, `member.agent`, `agent.instruct`, `agent.read`, `agent.act` |
+| `threadsResourceKind`, "`threads` resource" (signet 0.18.0) | every doc, regions | a `conversation` integration resource per shared thread (`conversationResourceKind`, its `externalId` the thread id) |
+| `floor.mayTake` / `mayTake` (signet 0.18.0) | every doc, regions | the `member.take` permission |
+| `grantReach` (Foundry's reach check before signet 0.18.0) | every doc, regions | the grant row on the thread's `conversation` resource |
 
 Left out on purpose, because a pattern would flag mostly legitimate text: "medical" (the doctor's-visit story is allowed in marketing), "Connection" and `connectionId` (WebSocket and database connections; Foundry's viewer has a live per-socket `connectionId`), "principal" (the permissions README's glossary word for any holder, job titles, the principal–agent problem), and "Cursor as a runtime" or "token savings" (a phrase can't tell a claim from a comparison).
 
+**Regions.** A Warden region copies its docs, so a name retired in the docs lives on in the region until someone rebuilds it, and the region records nothing that says it is out of date. signet 0.18.0 showed this: the docs moved to conversation resources and four signet regions kept describing grant terms. The generated files (in any regions directory, `.foundry/regions` or a base layer such as Kingdom's `.foundry/template/regions`: each region's `knowledge.md`, `recognise.md` and `region.json`, and the set's `GLOSSARY.md`, `registry.json`, `ECOSYSTEM.md`, `ERRORS.md`) are read for the terms marked **removed concepts** (the "regions" rows above): names of things that no longer exist, which point a Warden at nothing. Marketing words are not read there: a Warden is not public copy. A hit in a region is a **warning** from the region-freshness rule below, one per region, that says to rebuild it, never a line to edit; it never fails `check`, and it never goes in the baseline. A region's verbatim copy of an allowed doc line is allowed with it. Hand-written files beside the regions (a `README.md` in the regions directory, `.foundry/warden-brief.md`) are ordinary docs: a retired name there fails like in any doc.
+
 Per repo, in `scripts/ci/retired-terms/` (the same shape as template's doc-freshness rule):
 
-- `allow.txt` for legitimate uses: `<term>` allows it everywhere, `<path>\t<term>` in one file, or under a directory when the path ends in `/` (a retired-names table, a history doc). Stale copy never goes here.
-- `baseline.txt` for uses that predate the rule, `<path>\t<term>\t<count>`: reported as one warning, not failed. A use beyond the count fails, and so does a count that dropped (lower or delete the line), so the baseline only shrinks. `terms --write-baseline` writes it when there is none, and later only to shrink it: it refuses to add a use.
+- `allow.txt` for legitimate uses. Every entry sits under a `#` comment that says why (one comment may head a block of entries; a blank line ends the block). Fields are separated by one tab, with no spaces around them, and paths are exact: a file, or a directory ending in `/`, never a pattern. Three forms:
+  - `<term>` allows it everywhere.
+  - `<path>\t<term>` allows it in one file, or under a directory: for a file that is history as a whole (a dated design record, a review, a ticket, a retired-names table; changelogs are skipped without one).
+  - `<path>\t<term>\t"<snippet>"` allows one history mention in a live doc (`docs/CONVERSATIONS.md\tsignet-may-take\t"(once \`floor.mayTake\`)"`). The snippet quotes the retired name and words around it, and appears on exactly one line of that file; it allows only the use it quotes on that line, wherever the line moves. Another use of the name, on that line or any other, still fails. A snippet that is only the name, or that appears on more than one line, fails: lengthen it.
+
+  Every entry must cover a use today: one that covers nothing fails (`this allow covers nothing: delete it`), so the list never rots. A malformed line fails with its line number and the forms above. Stale copy never goes here.
+- `baseline.txt` for uses that predate the rule, `<path>\t<term>\t<count>`: reported as one warning, not failed. A use beyond the count fails, and so does a count that dropped (lower or delete the line), so the baseline only shrinks. `terms --write-baseline` writes it when there is none, and later only to shrink it: it refuses to add a use. Its `# terms:` line records the terms it was written against; uses of a term added to the list since then predate the rule in that repo, and `--write-baseline` adds them. A baseline without that line was written by the release before it, whose list was the first eight terms (Kastle through the Foundry roles): `--write-baseline` reads it so once, adds the newer terms' uses and rewrites it with the line.
+
+### Region freshness
+
+`check` also runs the **region-freshness** rule (alone: `regions [dir]`), which compares each Warden region with the docs it was built from. Why: a region records no commit or hash of what it was built from, so after signet 0.18.0 four signet regions and several docs still described grant terms and nothing noticed (Aron, 2026-11-15, asked for CI that catches it, in config "since they're kind of like a shared experience"). Part 4a of a region's `knowledge.md` holds the doc sections it was built from, verbatim, and `region.json` `sources.docUnits` names them (`doc:<path>#<slug>`). The rule cuts each named unit from the repo's doc as it is today, with the region builder's own rule (split at H2, an H2 over 2500 tokens at H3; empty, contents and short-preface sections dropped; "Do not copy" material stripped; headings moved down two levels), and compares it with the copy, source line included. It reads files only: no network, no model call, a few milliseconds per region.
+
+**Every region finding is a warning, never a failure.** A check fails only on something the person whose CI is red can fix. A contributor can fix a doc line; only the machine that holds the region builder (a model stage and a work directory) can rebuild a region. So a stale copy, a gone section and a retired name inside a region each say "rebuild region <id>" and count in the summary line, which ends every run that has something to say, so they show in every `check`; none of them turns it red, and there is nothing to baseline.
+
+Each region is one of:
+
+- **fresh**: every unit it names was compared, and every copy matches.
+- **partly checked**: the units compared match; others copy another repo's docs (a library the registry's `builtFrom.libraries` names, as `<name>/…` or `@scope/<name>/…`) and are not compared. The line gives the count: `1 of 2 doc units checked`.
+- **not checked**: it copies no doc sections, or only other repos'.
+- **stale**: a copied section changed (`+a −b lines` and the first new line).
+- **gone**: a section it copies is gone, its file or its heading not there today (a renamed heading looks the same as a removed one).
+- **unverifiable**: its `region.json` names no `sources.docUnits`, its `knowledge.md` has no part 4a (another granularity, or an older builder), or a unit it names has no copy.
+
+and separately, a region that **names something retired** (above).
+
+Only the layers Foundry reads count, as its `chorusLayers` reads `.foundry/project.json`: `chorus.layers` as written, else `chorus.regions`, else `.foundry/regions`. Of those, only `.foundry/regions` (where the builder installs) is compared. Any other layer (Kingdom's `.foundry/template/regions`) was built from another repo's docs and is named once as **not checked here**: nothing compares it today, here or in the repo it came from. A repo with no regions passes with nothing to say. A copy made by a builder that did not yet strip "Do not copy" material also compares, against the doc as written.
+
+What is read and what isn't (the summary line says so too): only part 4a is compared with the docs. The rest of each region (the model-written parts 1–3, part 4b's code entries, `recognise.md`, `region.json`) and the set's `GLOSSARY.md` and `registry.json` are only scanned for retired names, never compared. Doc sections no region copies (a new section that belongs in a region) are not seen. A region can also be wrong although its docs did not change: a member in the wrong region, or a code entry whose code moved. Nothing in this rule throws: a regions directory that is a file, an unreadable directory, region or doc, or an unreadable `.foundry/project.json` is one warning that names the path and what happened.
+
+**The port.** `src/docUnits.ts` ports the builder's `units.py` (`doc_units`, `sections`, `strip_do_not_copy`, `slug`) and `assemble.py` (`demote`, the part-4 layout); the builder lives outside the repos (`~/.foundry/evals/setup-practice/pipeline/`). `test/fixtures/doc-units-parity/expected.json` is the builder's own cut of the docs beside it, including docs at each boundary the cut has (the H3 split at 2500 tokens, the 40-token preface, "table of contents", indented and `~~~` fences, code-point length, every character of Python's whitespace, Unicode digits and word boundaries, U+2028 in a heading), with assemble.py's `demote`, source lines and part 4a for them, and `test/docUnits.test.ts` checks the port reproduces all of it. When the builder changes, regenerate it from the builder directory and run the tests:
+
+```
+python3 -I scripts/doc-units-parity/regenerate.py [~/.foundry/evals/setup-practice/pipeline]
+```
+
+The port goes away once the builder records, in `region.json`, the `sourceCommit` it read the repo at and a hash per doc unit (and per code entry): the check then compares hashes and stops depending on the builder's cut and the part-4 layout.
+
+### Adopting a release that adds retired terms
+
+New terms fail only in a repo's own docs, so adopting one is the path config #15 took when it added the first eight. Then, foundry (#302) and archive (#55) landed their `allow.txt` and `baseline.txt` before the release, which the old config never read, and the train's dependency sync moved them onto it. This time the order matters for the baseline: the installed (old) config does read `baseline.txt`, and a line for a term it doesn't know counts as a use that went away (`no longer uses … → delete its line`). So:
+
+1. Allow lines (all three forms) can land first: the old config reads only `<path>\t<term>`, and a term id it doesn't know allows nothing.
+2. After this release is published, the config bump and the baseline land in **one commit**: `bun update @inixiative/config`, then `bunx inixiative-config terms --write-baseline .` (with the bump installed, `bunx` runs the new version from `node_modules`; run before the bump, it runs the old one), then commit `package.json`, `bun.lock` and `scripts/ci/retired-terms/` together.
+
+A baseline written by the release before the `# terms:` line is upgraded by that same `--write-baseline`.
+
+**The signet 0.18.0 names** describe what signet removed in 0.18.0, so a repo whose code is still on signet 0.17 or earlier (Foundry and Kingdom main, today) describes its own code correctly with them. Such a repo adopts these names when it adopts signet 0.18: until then its baseline covers them, and its 0.18 migration rewrites the docs and shrinks the baseline. There is no version scoping. For the same reason this config release ships **after** Foundry #370 and Kingdom #261 (their signet 0.18 adoptions) merge.
 
 ### sync
 
@@ -190,7 +244,7 @@ jobs:
     uses: inixiative/config/.github/workflows/lib-ci.yml@main
 ```
 
-`lib-ci.yml` pins bun from `.bun-version`, optionally restores and saves one cache (inputs `cache-path` and `cache-key`, for a fixture a suite downloads; off when `cache-path` is empty), installs with `--frozen-lockfile` (kills the stale-lockfile class), runs `inixiative-config check .` (retired terms included), then the repo's own `bun run check`. A repo that doesn't use `lib-ci.yml` (template, Kingdom, Oracle, agent-session, gloss, Tribe) adopts the retired-terms rule by running `bunx inixiative-config terms .` from its own CI rules (template: a `scripts/ci/rules/retired-terms.sh` beside `doc-freshness.sh`).
+`lib-ci.yml` pins bun from `.bun-version`, optionally restores and saves one cache (inputs `cache-path` and `cache-key`, for a fixture a suite downloads; off when `cache-path` is empty), installs with `--frozen-lockfile` (kills the stale-lockfile class), runs `inixiative-config check .` (retired terms and region freshness included), then the repo's own `bun run check`. A repo that doesn't use `lib-ci.yml` (template, Kingdom, Oracle, agent-session, gloss, Tribe) adopts both rules by running `bunx inixiative-config terms .` and `bunx inixiative-config regions .` from its own CI rules (template: scripts in `scripts/ci/rules/` beside `doc-freshness.sh`).
 
 ## Release flow
 
