@@ -236,7 +236,7 @@ When anything was recorded or blessed it then ships this package last, so the BO
 
 Two lanes, each publishing in dependency order, with config last:
 
-- **primitives:** for example json-rules → permissions → transitions → rules-builder, plus prisma-map, atlas and gloss. Consumers: template, kingdom.
+- **primitives:** for example field-map → json-rules → permissions → transitions → rules-builder, plus prisma-map (retiring into field-map), atlas and gloss. Consumers: template, kingdom.
 - **agentic:** signet, kcp (the Kingdom CLI proxy, on signet), archive and agent-session, then foundry-core → foundry → foundry-acp (foundry depends on archive), built on the primitives' blessed set. foundry-core, foundry and foundry-acp publish from the foundry monorepo's `packages/core`, `packages/foundry` and `packages/acp`. Consumers: oracle (a private leaf), kingdom.
 
 A release is `train` (or `train --lane=agentic` to leave the primitives alone): bump the package's version on its default branch, then run the train. `train` automates the whole walk, this package and the consumer bumps included. Downstream repos pick up toolchain changes via `sync`.
