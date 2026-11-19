@@ -80,6 +80,7 @@ bunx @inixiative/config scan  [root] [--lane=primitives|agentic]
 bunx @inixiative/config train [root] [--lane=primitives|agentic] [--push] [--dry-run] [--adopt-check-timeout=<seconds>]
 bunx @inixiative/config ports [project]
 bunx @inixiative/config terms [dir] [--write-baseline]
+bunx @inixiative/config bounded [--minutes=40] [--memory-gb=12] [--wait-minutes=240] -- <command…>
 ```
 
 `train` is the one command not run through `bunx`: run it from a git checkout of this repo (`bun src/cli.ts train …` there), because it refuses to train from a bunx or npm copy (see train).
@@ -91,6 +92,17 @@ bunx @inixiative/config terms [dir] [--write-baseline]
 ### check
 
 `check` is read-only and exits non-zero on drift; run it in CI after a frozen-lockfile install. It verifies toolchain pins (declared once, at the root, pinned exactly: a workspace member declaring one is an error, and `bun.lock` must resolve each only to its pin, with no second copy), toolchain peer ranges (they must admit the pin and no older major; `sync` writes `>=<pin major>.<pin minor>.0`), `"latest"` ranges, `packageManager`/`.bun-version`, legacy `bun.lockb`, a committed (tracked, un-ignored) `bun.lock`, a gitignored `tmp/` (scratch space; `sync` adds `/tmp/*`, which keeps re-included files tracked), required scripts (`check`/`typecheck`/`lint`/`test`), lefthook (dep + `lefthook.yml` extending the shared hooks + `prepare` script; git repos only), stub `extends`, presence of this package, and for every `@inixiative/*` dependency (in the root or any workspace member, of either lane) that the declared range admits the blessed version and the lockfile resolves to it (the stale-lockfile class). A package with a candidate (one no hold covers) also accepts the candidate and anything between: a range admitting either passes, and so does a lock from the blessed version up to the candidate. A range that does not admit the blessed version is rewritten to `^<blessed>`, except an exact pin, which stays exact and moves to the blessed version. An npm alias (`"@inixiative/session-archive": "npm:@inixiative/archive@^0.2.1"`) is held to its target's blessed version and rewritten as an alias; `workspace:`, `file:` and `link:` ranges are a repo linking itself and are left alone.
+
+### bounded
+
+`bounded -- <command>` runs a repo's full check as the machine's one check at a time, inside a time limit and a memory ceiling. A repo's `check` script becomes `inixiative-config bounded -- bun run check:all`, with the old chain moved to `check:all`.
+
+- **One at a time.** It waits for `~/.inixiative/check.lock` (the same lock the train uses, under another name: `acquireMachineLock`), saying whose check it waits for, and gives up with exit 75 after `--wait-minutes`. A lock left by a dead process is taken over.
+- **Time limit.** After `--minutes` (default 40) the command's whole process group is stopped: SIGTERM, then SIGKILL ten seconds later. Exit 124.
+- **Memory ceiling.** Every ten seconds it adds up the memory of the group, compressed pages included (`top`'s MEM on macOS, RSS elsewhere), and stops the group past `--memory-gb` (default 12). Exit 137. The last line names the bound, the peak and the process holding the most.
+- **In CI** (`CI` set) the command runs as it is: one check per runner, and the runner has its own limits.
+
+Why (Aron, 2026-11-19: "We should definitely make something that stops that from happening"): on 2026-11-18/19 a Foundry test looped to 23 GB twice; its ten-minute tool timeout only moved it to the background, and it thrashed a 64 GB machine until its owner was told. The same night three to five full checks ran at once from different sessions: the machine's load was a median 31 with one check running, 118 with two or three and 264 with four or more (`~/.foundry/evals/probes/2026-11-19-foundry-load/`). RSS would not have caught the loop: the system had compressed it to 4 to 9 GB of RSS while its footprint was 23 GB.
 
 ### Retired terms
 
