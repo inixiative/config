@@ -1,10 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { homedir, hostname } from 'node:os';
+import { constants, homedir, hostname } from 'node:os';
 import { join } from 'node:path';
-import { acquireMachineLock, type MachineLockHolder, processStart } from './lib';
+import { acquireMachineLock, holdMachineLock, type MachineLockHolder, processStart } from './lib';
 
-/** What holds the machine's one check slot. */
-export type CheckLock = MachineLockHolder & { cwd: string; command: string };
+/** Who holds the machine's one check slot. */
+export type CheckLockHolder = MachineLockHolder & { cwd: string; command: string };
 
 export type Bounds = {
   /** Wall-clock seconds the command may run once it holds the lock. */
@@ -23,66 +23,103 @@ export const DEFAULT_BOUNDS: Bounds = {
 
 export type BoundedOutcome =
   | { ended: 'exited'; code: number }
+  | { ended: 'not started'; code: 127; reason: string }
   | { ended: 'time limit' | 'memory ceiling'; code: number; peakBytes: number; heaviest: string }
-  | { ended: 'lock wait'; code: number; heldBy: CheckLock };
+  | { ended: 'lock wait'; code: 75; heldBy: CheckLockHolder; path: string };
 
-/** One machine-wide slot for full checks, beside the train's lock. */
+/** Set in a bounded command's environment: a `bounded` under it runs its command as it is. */
+export const INSIDE_BOUNDED = 'INIXIATIVE_BOUNDED';
+
+/** The machine's one slot for full checks: its own file, on the same lock code as the train's. */
 export const checkLockPath = (): string => join(homedir(), '.inixiative', 'check.lock');
+
+/** The exit code a shell gives a process that ended this way. */
+export const exitCodeOf = (code: number | null, signal: NodeJS.Signals | null): number =>
+  code ?? (signal ? 128 + (constants.signals[signal] ?? 0) : 1);
+
+type GroupProcess = { pid: number; bytes: number; command: string };
 
 const UNITS: Record<string, number> = { B: 1, K: 2 ** 10, M: 2 ** 20, G: 2 ** 30, T: 2 ** 40 };
 
-/**
- * Memory held by each process of group `pgid`, by command. macOS reads `top`, whose MEM is the
- * footprint (a process the system has compressed shows a small RSS: 23 GB read as 5 GB on
- * 2026-11-19); elsewhere RSS from `ps`.
- */
-export const groupMemory = (pgid: number): { bytes: number; command: string }[] => {
-  if (process.platform === 'darwin') {
-    const top = spawnSync('top', ['-l', '1', '-n', '5000', '-stats', 'pgrp,mem,command'], {
-      encoding: 'utf8',
-    });
-    return (top.stdout ?? '').split('\n').flatMap((line) => {
-      const match = /^\s*(\d+)\s+([\d.]+)([BKMGT])\S*\s+(.*)$/.exec(line);
-      return match && Number(match[1]) === pgid
-        ? [
-            {
-              bytes: Number(match[2]) * (UNITS[match[3] ?? 'B'] ?? 1),
-              command: (match[4] ?? '').trim(),
-            },
-          ]
-        : [];
-    });
-  }
-  const ps = spawnSync('ps', ['-eo', 'pgid=,rss=,comm='], { encoding: 'utf8' });
-  return (ps.stdout ?? '').split('\n').flatMap((line) => {
-    const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
-    return match && Number(match[1]) === pgid
-      ? [{ bytes: Number(match[2]) * 1024, command: (match[3] ?? '').trim() }]
+/** The processes of group `pgid` in `top -stats pid,pgrp,mem,command` output. */
+export const groupProcessesInTop = (output: string, pgid: number): GroupProcess[] =>
+  output.split('\n').flatMap((line) => {
+    const match = /^\s*(\d+)\s+(\d+)\s+([\d.]+)([BKMGT])\S*\s+(.*)$/.exec(line);
+    return match && Number(match[2]) === pgid
+      ? [
+          {
+            pid: Number(match[1]),
+            bytes: Number(match[3]) * (UNITS[match[4] ?? 'B'] ?? 1),
+            command: (match[5] ?? '').trim(),
+          },
+        ]
       : [];
   });
+
+const groupProcessesInPs = (output: string, pgid: number): GroupProcess[] =>
+  output.split('\n').flatMap((line) => {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    return match && Number(match[2]) === pgid
+      ? [
+          {
+            pid: Number(match[1]),
+            bytes: Number(match[3]) * 1024,
+            command: (match[4] ?? '').trim(),
+          },
+        ]
+      : [];
+  });
+
+/**
+ * Memory held by each process of group `pgid`. macOS reads `top`, whose MEM is the footprint (a
+ * process the system has compressed shows a small RSS: 23 GB read as 5 GB on 2026-11-19);
+ * elsewhere, and when `top` gives nothing in 30 s, RSS from `ps`.
+ */
+export const fetchGroupMemory = (pgid: number): GroupProcess[] => {
+  if (process.platform === 'darwin') {
+    const top = spawnSync('top', ['-l', '1', '-n', '5000', '-stats', 'pid,pgrp,mem,command'], {
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    if (top.status === 0) return groupProcessesInTop(top.stdout, pgid);
+  }
+  const ps = spawnSync('ps', ['-eo', 'pid=,pgid=,rss=,comm='], {
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+  return groupProcessesInPs(ps.stdout ?? '', pgid);
 };
 
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
+const signalGroup = (pgid: number, signal: NodeJS.Signals | 0): boolean => {
+  try {
+    process.kill(-pgid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** SIGTERM to the whole group, SIGKILL to whatever is left ten seconds later. */
 const stopGroup = async (pgid: number): Promise<void> => {
-  const signal = (name: NodeJS.Signals) => {
-    try {
-      process.kill(-pgid, name);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  if (!signal('SIGTERM')) return;
-  for (let waited = 0; waited < 10_000 && signal(0 as unknown as NodeJS.Signals); waited += 200)
-    await sleep(200);
-  signal('SIGKILL');
+  if (!signalGroup(pgid, 'SIGTERM')) return;
+  for (let waited = 0; waited < 10_000 && signalGroup(pgid, 0); waited += 200) await sleep(200);
+  signalGroup(pgid, 'SIGKILL');
 };
 
 /**
+ * Runs beside the command in its group and reads descriptor 3, which only `bounded` holds open:
+ * when `bounded` dies, a SIGKILL included, the read ends and the group is killed at once.
+ */
+const WITH_WATCHER = '(read _ <&3; kill -KILL 0) >/dev/null 2>&1 & exec "$@"';
+
+/**
  * Run `command` as the machine's one full check: wait for the lock, then stop the command's
- * whole process group when it outlives `seconds` or holds more than `memoryBytes`. Exit codes
- * follow `timeout(1)`: 124 for the time limit, 137 for the memory ceiling, 75 for the lock wait.
+ * whole process group when it outlives `seconds` or holds more than `memoryBytes`, when
+ * `bounded` itself is stopped, and once the command has ended (nothing it started stays behind).
+ * Limits are read every `sampleMs`. Exit codes follow `timeout(1)`: 124 for the time limit, 137
+ * for the memory ceiling, 75 for the lock wait.
  */
 export const runBounded = async (
   command: readonly string[],
@@ -92,15 +129,16 @@ export const runBounded = async (
     cwd?: string;
     sampleMs?: number;
     say?: (line: string) => void;
-    memoryOf?: typeof groupMemory;
+    memoryOf?: typeof fetchGroupMemory;
   } = {},
 ): Promise<BoundedOutcome> => {
+  if (command.length === 0) throw new Error('bounded: no command given');
   const bounds = { ...DEFAULT_BOUNDS, ...options.bounds };
   const say = options.say ?? ((line: string) => console.error(line));
   const cwd = options.cwd ?? process.cwd();
   const path = options.lockPath ?? checkLockPath();
   const sampleMs = options.sampleMs ?? 10_000;
-  const holder: CheckLock = {
+  const holder: CheckLockHolder = {
     pid: process.pid,
     hostname: hostname(),
     processStart: processStart(process.pid),
@@ -112,70 +150,72 @@ export const runBounded = async (
   let told = '';
   let lock = acquireMachineLock(path, holder);
   while (!lock.ok) {
-    if (Date.now() > waitUntil) return { ended: 'lock wait', code: 75, heldBy: lock.heldBy };
-    const who = `${lock.heldBy.cwd} (pid ${lock.heldBy.pid}, since ${lock.heldBy.startedAt})`;
+    if (Date.now() > waitUntil) return { ended: 'lock wait', code: 75, heldBy: lock.heldBy, path };
+    const { heldBy } = lock;
+    const who = `${heldBy.cwd} (pid ${heldBy.pid} on ${heldBy.hostname}, since ${heldBy.startedAt}; lock ${path})`;
     if (who !== told) say(`bounded: waiting for the check in ${who}`);
     told = who;
     await sleep(Math.min(5_000, sampleMs));
     lock = acquireMachineLock(path, holder);
   }
   const { release } = lock;
-  const [file, ...args] = command;
-  if (!file) throw new Error('bounded: no command given');
-  const child = spawn(file, args, { cwd, stdio: 'inherit', detached: true });
-  const pgid = child.pid;
-  const exited = new Promise<number>((done) => {
-    child.on('error', () => done(127));
-    child.on('exit', (code, signal) => done(code ?? (signal ? 128 : 1)));
+  const child = spawn('sh', ['-c', WITH_WATCHER, 'sh', ...command], {
+    cwd,
+    stdio: ['inherit', 'inherit', 'inherit', 'pipe'],
+    detached: true,
+    env: { ...process.env, [INSIDE_BOUNDED]: String(process.pid) },
   });
-  const passOn = (signal: NodeJS.Signals) => () => {
-    if (pgid) void stopGroup(pgid);
-    release();
-    process.exit(signal === 'SIGINT' ? 130 : signal === 'SIGHUP' ? 129 : 143);
+  const pgid = child.pid;
+  const exited = new Promise<{ code: number; reason?: string }>((done) => {
+    child.on('error', (error) => done({ code: 127, reason: error.message }));
+    child.on('exit', (code, signal) => done({ code: exitCodeOf(code, signal) }));
+  });
+  const stop = async () => {
+    if (pgid) await stopGroup(pgid);
   };
-  const handlers = (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map(
-    (signal) => [signal, passOn(signal)] as const,
-  );
-  for (const [signal, handler] of handlers) process.on(signal, handler);
-  process.on('exit', release);
+  const unhold = holdMachineLock(release, stop);
   const deadline = Date.now() + bounds.seconds * 1000;
   let peakBytes = 0;
   let heaviest = '';
   try {
     for (;;) {
-      const code = await Promise.race([exited, sleep(sampleMs).then(() => null)]);
-      if (code !== null) return { ended: 'exited', code };
+      const end = await Promise.race([exited, sleep(sampleMs).then(() => null)]);
+      if (end?.reason !== undefined) return { ended: 'not started', code: 127, reason: end.reason };
+      if (end) return { ended: 'exited', code: end.code };
       if (!pgid) continue;
-      const held = (options.memoryOf ?? groupMemory)(pgid);
+      const held = (options.memoryOf ?? fetchGroupMemory)(pgid);
       const bytes = held.reduce((sum, entry) => sum + entry.bytes, 0);
       if (bytes > peakBytes) {
         peakBytes = bytes;
-        heaviest = held.reduce((a, b) => (b.bytes > a.bytes ? b : a), {
-          bytes: 0,
-          command: '',
-        }).command;
+        const most = held.reduce((a, b) => (b.bytes > a.bytes ? b : a));
+        heaviest = `${most.command} (pid ${most.pid})`;
       }
       const over =
         bytes > bounds.memoryBytes ? 'memory ceiling' : Date.now() > deadline ? 'time limit' : null;
       if (!over) continue;
-      await stopGroup(pgid);
+      await stop();
       await exited;
       return { ended: over, code: over === 'time limit' ? 124 : 137, peakBytes, heaviest };
     }
   } finally {
-    for (const [signal, handler] of handlers) process.off(signal, handler);
-    process.off('exit', release);
+    await stop();
+    unhold();
     release();
   }
 };
 
-/** The line a stopped check ends on: which bound, how far, and what held the most. */
+/** The line a check that did not end by itself finishes on. */
 export const boundedVerdict = (outcome: BoundedOutcome, bounds: Bounds): string | null => {
   if (outcome.ended === 'exited') return null;
-  if (outcome.ended === 'lock wait')
-    return `✗ bounded: gave up after ${Math.round(bounds.waitSeconds / 60)} min waiting for the check in ${outcome.heldBy.cwd} (pid ${outcome.heldBy.pid})`;
+  if (outcome.ended === 'not started')
+    return `✗ bounded: the command did not start: ${outcome.reason}`;
+  if (outcome.ended === 'lock wait') {
+    const { heldBy } = outcome;
+    return `✗ bounded: gave up after ${Math.round(bounds.waitSeconds)} s waiting for the check in ${heldBy.cwd} (pid ${heldBy.pid} on ${heldBy.hostname}); if that check is gone, remove ${outcome.path}`;
+  }
   const peak = (outcome.peakBytes / 2 ** 30).toFixed(1);
+  const most = outcome.heaviest || 'unknown';
   return outcome.ended === 'time limit'
-    ? `✗ bounded: stopped at the ${Math.round(bounds.seconds / 60)} min time limit (peak ${peak} GB, most in ${outcome.heaviest || 'unknown'})`
-    : `✗ bounded: stopped at the ${(bounds.memoryBytes / 2 ** 30).toFixed(1)} GB memory ceiling (peak ${peak} GB, most in ${outcome.heaviest || 'unknown'})`;
+    ? `✗ bounded: stopped at the ${Math.round(bounds.seconds / 60)} min time limit (peak ${peak} GB, most in ${most})`
+    : `✗ bounded: stopped at the ${(bounds.memoryBytes / 2 ** 30).toFixed(1)} GB memory ceiling (peak ${peak} GB, most in ${most})`;
 };

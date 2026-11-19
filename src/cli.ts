@@ -11,7 +11,7 @@ import {
 import { hostname, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { type CommandLine, parseCommandLine, UsageError } from './args';
-import { boundedVerdict, DEFAULT_BOUNDS, runBounded } from './bounded';
+import { boundedVerdict, DEFAULT_BOUNDS, exitCodeOf, INSIDE_BOUNDED, runBounded } from './bounded';
 import {
   acquireTrainLock,
   activeCandidates,
@@ -58,10 +58,16 @@ const { command, positionals, preset: presetFlag, dryRun, adoptCheckTimeout } = 
 const dir = resolve(command === 'bounded' ? '.' : (positionals[0] ?? '.'));
 
 if (command === 'bounded') {
-  // CI runs one check per machine and has its own limits: the command runs as it is.
-  if (process.env.CI) {
+  // CI runs one check per machine under its own limits, and a `bounded` under another already
+  // holds the lock and the limits: either way the command runs as it is.
+  if (process.env.CI || process.env[INSIDE_BOUNDED]) {
     const [file, ...args] = positionals;
-    process.exit(spawnSync(file ?? '', args, { stdio: 'inherit' }).status ?? 1);
+    const ran = spawnSync(file ?? '', args, { stdio: 'inherit' });
+    if (ran.error) {
+      console.error(`✗ bounded: the command did not start: ${ran.error.message}`);
+      process.exit(127);
+    }
+    process.exit(exitCodeOf(ran.status, ran.signal));
   }
   const { minutes, memoryGb, waitMinutes } = commandLine.bounds;
   const bounds = {

@@ -92,7 +92,10 @@ export const parseCommandLine = (argv: string[]): CommandLine => {
     memoryGb: positive('memory-gb'),
     waitMinutes: positive('wait-minutes'),
   };
-  if (command === 'bounded' && positionals.length === 0)
+  if (
+    command === 'bounded' &&
+    (positionals.length === 0 || !tokens.some((token) => token.kind === 'option-terminator'))
+  )
     throw new UsageError('bounded: give the command after --, e.g. bounded -- bun run check:all');
   const laneValue = values.lane;
   if (typeof laneValue === 'string' && !isLane(laneValue)) {

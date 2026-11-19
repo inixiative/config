@@ -1236,7 +1236,7 @@ export type StaleMachineLock<Holder extends MachineLockHolder> =
 export type StaleTrainLock = StaleMachineLock<TrainLock>;
 
 /**
- * The one machine-wide lock: every clone, worktree and copy of config shares it. It lives in the
+ * The train's machine-wide lock: every clone, worktree and copy of config shares it. It lives in the
  * home directory, not the temp dir, which differs between shells and sandboxes on macOS.
  */
 export const trainLockPath = (): string => join(homedir(), '.inixiative', 'train.lock');
@@ -1380,14 +1380,36 @@ export const acquireMachineLock = <Holder extends MachineLockHolder>(
 
 /** Release the lock however the train ends: normal exit, failure, or SIGINT/SIGTERM/SIGHUP. */
 export const holdTrainLock = (release: () => void): void => {
+  holdMachineLock(release);
+};
+
+/**
+ * Release a machine lock however its holder ends: normal exit, failure, or SIGINT/SIGTERM/SIGHUP.
+ * `beforeExit` runs to its end before a signal's exit (a check stops its process group first).
+ * Returns the undo, for a holder that outlives its lock.
+ */
+export const holdMachineLock = (
+  release: () => void,
+  beforeExit: () => Promise<void> = async () => {},
+): (() => void) => {
   process.on('exit', release);
-  for (const [signal, code] of [
-    ['SIGINT', 130],
-    ['SIGTERM', 143],
-    ['SIGHUP', 129],
-  ] as const) {
-    process.on(signal, () => process.exit(code));
-  }
+  const handlers = (
+    [
+      ['SIGINT', 130],
+      ['SIGTERM', 143],
+      ['SIGHUP', 129],
+    ] as const
+  ).map(([signal, code]) => {
+    const handler = () => {
+      void beforeExit().finally(() => process.exit(code));
+    };
+    process.on(signal, handler);
+    return [signal, handler] as const;
+  });
+  return () => {
+    process.off('exit', release);
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+  };
 };
 
 /** Whether `dir` is the top of a git checkout of inixiative/config (not a bunx or npm copy). */

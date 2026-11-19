@@ -95,14 +95,20 @@ bunx @inixiative/config bounded [--minutes=40] [--memory-gb=12] [--wait-minutes=
 
 ### bounded
 
-`bounded -- <command>` runs a repo's full check as the machine's one check at a time, inside a time limit and a memory ceiling. A repo's `check` script becomes `inixiative-config bounded -- bun run check:all`, with the old chain moved to `check:all`.
+`bounded -- <command>` runs a repo's full check as the machine's one check at a time, inside a time limit and a memory ceiling. A repo's `check` script becomes `inixiative-config bounded -- bun run check:all`, with the old chain moved to `check:all`. The `--` is required; everything after it reaches the command untouched.
 
-- **One at a time.** It waits for `~/.inixiative/check.lock` (the same lock the train uses, under another name: `acquireMachineLock`), saying whose check it waits for, and gives up with exit 75 after `--wait-minutes`. A lock left by a dead process is taken over.
-- **Time limit.** After `--minutes` (default 40) the command's whole process group is stopped: SIGTERM, then SIGKILL ten seconds later. Exit 124.
-- **Memory ceiling.** Every ten seconds it adds up the memory of the group, compressed pages included (`top`'s MEM on macOS, RSS elsewhere), and stops the group past `--memory-gb` (default 12). Exit 137. The last line names the bound, the peak and the process holding the most.
-- **In CI** (`CI` set) the command runs as it is: one check per runner, and the runner has its own limits.
+- **One at a time.** It waits for `~/.inixiative/check.lock`, saying whose check it waits for (directory, pid, host, since when), and gives up with exit 75 after `--wait-minutes`. This is its own lock file on the same code as the train's (`acquireMachineLock`): a train and a check can run together. A lock left by a dead process on this host is taken over. Waiters ask again every five seconds and there is no queue, so with several waiting the order is not first come, first served.
+- **Time limit.** After `--minutes` (default 40, counted from when it holds the lock) the command's whole process group is stopped: SIGTERM, then SIGKILL ten seconds later. Exit 124.
+- **Memory ceiling.** It adds up the memory of the group, compressed pages included (`top`'s MEM on macOS; RSS from `ps` elsewhere, or when `top` gives nothing in 30 s), and stops the group past `--memory-gb` (default 12). Exit 137. The last line names the bound, the peak and the process holding the most.
+- **Both limits are read every ten seconds**, so a command can overrun either by up to that long.
+- **Nothing outlives it.** When the command ends, whatever it left running in its group is stopped. When `bounded` gets SIGINT, SIGTERM or SIGHUP it stops the group before it frees the lock. When `bounded` itself is killed, a watcher inside the group kills the group at once.
+- **What escapes.** A process that leaves the group (`setsid`, a detached spawn, a container started through Docker) is neither stopped nor counted.
+- **Nested.** A `bounded` started under another (`INIXIATIVE_BOUNDED` set) runs its command as it is; the outer one holds the lock and the limits. **In CI** (`CI` set) likewise: one check per runner, under the runner's limits.
+- **Exit codes** otherwise are the command's own: 127 when it does not exist, 128 plus the signal when a signal ended it.
 
 Why (Aron, 2026-11-19: "We should definitely make something that stops that from happening"): on 2026-11-18/19 a Foundry test looped to 23 GB twice; its ten-minute tool timeout only moved it to the background, and it thrashed a 64 GB machine until its owner was told. The same night three to five full checks ran at once from different sessions: the machine's load was a median 31 with one check running, 118 with two or three and 264 with four or more (`~/.foundry/evals/probes/2026-11-19-foundry-load/`). RSS would not have caught the loop: the system had compressed it to 4 to 9 GB of RSS while its footprint was 23 GB.
+
+Not yet: the train's own check after `train:adopt` still runs `bun run check` under its `--adopt-check-timeout`, which stops only the top process and would count lock wait as check time. Move it onto `bounded` before any repo adopts `bounded` in its `check`.
 
 ### Retired terms
 
