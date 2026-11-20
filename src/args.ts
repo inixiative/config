@@ -1,7 +1,7 @@
 import { type ParseArgsConfig, parseArgs } from 'node:util';
 import { isLane, type Lane, type Preset } from './lib';
 
-export const COMMANDS = ['check', 'sync', 'scan', 'train', 'ports', 'terms'] as const;
+export const COMMANDS = ['check', 'sync', 'scan', 'train', 'ports', 'terms', 'bounded'] as const;
 export type Command = (typeof COMMANDS)[number];
 
 const PRESETS: readonly Preset[] = ['base', 'node', 'react'];
@@ -18,6 +18,11 @@ const OPTIONS = {
   train: { lane, push: flag, 'dry-run': flag, 'adopt-check-timeout': { type: 'string' } },
   ports: {},
   terms: { 'write-baseline': flag },
+  bounded: {
+    minutes: { type: 'string' },
+    'memory-gb': { type: 'string' },
+    'wait-minutes': { type: 'string' },
+  },
 } as const;
 
 export type CommandLine = {
@@ -32,6 +37,8 @@ export type CommandLine = {
   /** Seconds the check after `train:adopt` may run before it counts as failed. */
   adoptCheckTimeout: number;
   writeBaseline: boolean;
+  /** `bounded` only: the limits given, in the flags' own units. */
+  bounds: { minutes?: number; memoryGb?: number; waitMinutes?: number };
 };
 
 export class UsageError extends Error {}
@@ -59,7 +66,7 @@ export const parseCommandLine = (argv: string[]): CommandLine => {
   } catch (error) {
     throw new UsageError(`${command}: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (positionals.length > 1)
+  if (command !== 'bounded' && positionals.length > 1)
     throw new UsageError(
       `${command}: unexpected argument ${positionals[1]} — did you mean --${positionals[1]}?`,
     );
@@ -72,6 +79,24 @@ export const parseCommandLine = (argv: string[]): CommandLine => {
   if (typeof presetValue === 'string' && !PRESETS.includes(presetValue as Preset)) {
     throw new UsageError(`unknown preset: ${presetValue}`);
   }
+  const positive = (name: 'minutes' | 'memory-gb' | 'wait-minutes'): number | undefined => {
+    const given = values[name];
+    if (typeof given !== 'string') return undefined;
+    const amount = Number(given);
+    if (!Number.isFinite(amount) || amount <= 0)
+      throw new UsageError(`--${name} takes a number above zero, got ${given}`);
+    return amount;
+  };
+  const bounds = {
+    minutes: positive('minutes'),
+    memoryGb: positive('memory-gb'),
+    waitMinutes: positive('wait-minutes'),
+  };
+  if (
+    command === 'bounded' &&
+    (positionals.length === 0 || !tokens.some((token) => token.kind === 'option-terminator'))
+  )
+    throw new UsageError('bounded: give the command after --, e.g. bounded -- bun run check:all');
   const laneValue = values.lane;
   if (typeof laneValue === 'string' && !isLane(laneValue)) {
     throw new UsageError(`unknown lane: ${laneValue}`);
@@ -93,5 +118,6 @@ export const parseCommandLine = (argv: string[]): CommandLine => {
     dryRun: values['dry-run'] === true,
     adoptCheckTimeout,
     writeBaseline: values['write-baseline'] === true,
+    bounds,
   };
 };

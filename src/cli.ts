@@ -11,6 +11,7 @@ import {
 import { hostname, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { type CommandLine, parseCommandLine, UsageError } from './args';
+import { boundedVerdict, DEFAULT_BOUNDS, exitCodeOf, INSIDE_BOUNDED, runBounded } from './bounded';
 import {
   acquireTrainLock,
   activeCandidates,
@@ -49,12 +50,36 @@ try {
   if (!(error instanceof UsageError)) throw error;
   console.error(`✗ ${error.message}`);
   console.error(
-    'Usage: inixiative-config check [dir] [--preset=base|node|react]\n       inixiative-config sync [dir] [--preset=base|node|react] [--force] [--no-install]\n       inixiative-config scan [root] [--lane=primitives|agentic]\n       inixiative-config train [root] [--lane=primitives|agentic] [--push] [--dry-run]\n       inixiative-config ports [project]\n       inixiative-config terms [dir] [--write-baseline]',
+    'Usage: inixiative-config check [dir] [--preset=base|node|react]\n       inixiative-config sync [dir] [--preset=base|node|react] [--force] [--no-install]\n       inixiative-config scan [root] [--lane=primitives|agentic]\n       inixiative-config train [root] [--lane=primitives|agentic] [--push] [--dry-run]\n       inixiative-config ports [project]\n       inixiative-config terms [dir] [--write-baseline]\n       inixiative-config bounded [--minutes=40] [--memory-gb=12] [--wait-minutes=240] -- <command…>',
   );
   process.exit(2);
 }
 const { command, positionals, preset: presetFlag, dryRun, adoptCheckTimeout } = commandLine;
-const dir = resolve(positionals[0] ?? '.');
+const dir = resolve(command === 'bounded' ? '.' : (positionals[0] ?? '.'));
+
+if (command === 'bounded') {
+  // CI runs one check per machine under its own limits, and a `bounded` under another already
+  // holds the lock and the limits: either way the command runs as it is.
+  if (process.env.CI || process.env[INSIDE_BOUNDED]) {
+    const [file, ...args] = positionals;
+    const ran = spawnSync(file ?? '', args, { stdio: 'inherit' });
+    if (ran.error) {
+      console.error(`✗ bounded: the command did not start: ${ran.error.message}`);
+      process.exit(127);
+    }
+    process.exit(exitCodeOf(ran.status, ran.signal));
+  }
+  const { minutes, memoryGb, waitMinutes } = commandLine.bounds;
+  const bounds = {
+    seconds: minutes === undefined ? DEFAULT_BOUNDS.seconds : minutes * 60,
+    memoryBytes: memoryGb === undefined ? DEFAULT_BOUNDS.memoryBytes : memoryGb * 2 ** 30,
+    waitSeconds: waitMinutes === undefined ? DEFAULT_BOUNDS.waitSeconds : waitMinutes * 60,
+  };
+  const outcome = await runBounded(positionals, { bounds });
+  const verdict = boundedVerdict(outcome, bounds);
+  if (verdict) console.error(verdict);
+  process.exit(outcome.code);
+}
 
 if (command === 'ports') {
   const project = positionals[0];

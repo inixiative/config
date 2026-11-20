@@ -1209,16 +1209,20 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
   };
 }
 
-/**
- * Who holds the train lock. One train at a time per machine: trains share npm's version counter
- * and, across checkouts, the ecosystem repos they commit to.
- */
-export type TrainLock = {
+/** Who holds a machine-wide lock: enough to tell a living holder from a dead or replaced one. */
+export type MachineLockHolder = {
   pid: number;
   hostname: string;
   /** The holder process's start time (`ps -o lstart=`), so a reused pid isn't taken for it. */
   processStart: string | null;
   startedAt: string;
+};
+
+/**
+ * Who holds the train lock. One train at a time per machine: trains share npm's version counter
+ * and, across checkouts, the ecosystem repos they commit to.
+ */
+export type TrainLock = MachineLockHolder & {
   lanes: readonly string[];
   root: string;
   /** The config checkout the train runs from. */
@@ -1226,12 +1230,13 @@ export type TrainLock = {
 };
 
 /** Why a lock was taken over. */
-export type StaleTrainLock =
-  | { reason: 'gone' | 'pid reused'; holder: TrainLock }
+export type StaleMachineLock<Holder extends MachineLockHolder> =
+  | { reason: 'gone' | 'pid reused'; holder: Holder }
   | { reason: 'corrupt'; contents: string };
+export type StaleTrainLock = StaleMachineLock<TrainLock>;
 
 /**
- * The one machine-wide lock: every clone, worktree and copy of config shares it. It lives in the
+ * The train's machine-wide lock: every clone, worktree and copy of config shares it. It lives in the
  * home directory, not the temp dir, which differs between shells and sandboxes on macOS.
  */
 export const trainLockPath = (): string => join(homedir(), '.inixiative', 'train.lock');
@@ -1252,11 +1257,11 @@ export const processStart = (pid: number): string | null => {
   return start === '' ? null : start;
 };
 
-const parseLock = (contents: string): TrainLock | null => {
+const parseLock = <Holder extends MachineLockHolder>(contents: string): Holder | null => {
   try {
-    const lock = JSON.parse(contents) as Partial<TrainLock> | null;
+    const lock = JSON.parse(contents) as Partial<Holder> | null;
     return lock && typeof lock === 'object' && !Array.isArray(lock) && typeof lock.pid === 'number'
-      ? (lock as TrainLock)
+      ? (lock as Holder)
       : null;
   } catch {
     return null;
@@ -1264,7 +1269,10 @@ const parseLock = (contents: string): TrainLock | null => {
 };
 
 /** Why `contents` no longer holds the lock, or null while its train may still be running. */
-const staleness = (contents: string, lock: TrainLock | null): StaleTrainLock | null => {
+const staleness = <Holder extends MachineLockHolder>(
+  contents: string,
+  lock: Holder | null,
+): StaleMachineLock<Holder> | null => {
   if (!lock) return { reason: 'corrupt', contents };
   // Another machine's process can't be checked from here: it holds until a person removes it.
   if (lock.hostname !== hostname()) return null;
@@ -1336,15 +1344,22 @@ const removeStale = (path: string, stale: string): void => {
  * whose pid now belongs to a different process, or that can't be parsed is stale and is taken
  * over. Returns the release, which removes the lock only while it is still ours.
  */
-export const acquireTrainLock = (
+export const acquireTrainLock = (path: string, holder: TrainLock) =>
+  acquireMachineLock(path, holder);
+
+/**
+ * Take the machine-wide lock at `path`, or say who holds it: the train's lock and the check's
+ * (`bounded`) are both this. Never waits; a caller that queues asks again.
+ */
+export const acquireMachineLock = <Holder extends MachineLockHolder>(
   path: string,
-  holder: TrainLock,
+  holder: Holder,
 ):
-  | { ok: true; release: () => void; reclaimed?: StaleTrainLock }
-  | { ok: false; heldBy: TrainLock; path: string } => {
+  | { ok: true; release: () => void; reclaimed?: StaleMachineLock<Holder> }
+  | { ok: false; heldBy: Holder; path: string } => {
   mkdirSync(dirname(path), { recursive: true });
   const mine = `${JSON.stringify(holder, null, 2)}\n`;
-  let reclaimed: StaleTrainLock | undefined;
+  let reclaimed: StaleMachineLock<Holder> | undefined;
   for (;;) {
     if (createExclusive(path, mine)) {
       const release = () => {
@@ -1354,7 +1369,7 @@ export const acquireTrainLock = (
     }
     const current = readOrNull(path);
     if (current === null) continue;
-    const lock = parseLock(current);
+    const lock = parseLock<Holder>(current);
     const stale = staleness(current, lock);
     if (!stale && lock) return { ok: false, heldBy: lock, path };
     if (!stale) continue;
@@ -1365,14 +1380,36 @@ export const acquireTrainLock = (
 
 /** Release the lock however the train ends: normal exit, failure, or SIGINT/SIGTERM/SIGHUP. */
 export const holdTrainLock = (release: () => void): void => {
+  holdMachineLock(release);
+};
+
+/**
+ * Release a machine lock however its holder ends: normal exit, failure, or SIGINT/SIGTERM/SIGHUP.
+ * `beforeExit` runs to its end before a signal's exit (a check stops its process group first).
+ * Returns the undo, for a holder that outlives its lock.
+ */
+export const holdMachineLock = (
+  release: () => void,
+  beforeExit: () => Promise<void> = async () => {},
+): (() => void) => {
   process.on('exit', release);
-  for (const [signal, code] of [
-    ['SIGINT', 130],
-    ['SIGTERM', 143],
-    ['SIGHUP', 129],
-  ] as const) {
-    process.on(signal, () => process.exit(code));
-  }
+  const handlers = (
+    [
+      ['SIGINT', 130],
+      ['SIGTERM', 143],
+      ['SIGHUP', 129],
+    ] as const
+  ).map(([signal, code]) => {
+    const handler = () => {
+      void beforeExit().finally(() => process.exit(code));
+    };
+    process.on(signal, handler);
+    return [signal, handler] as const;
+  });
+  return () => {
+    process.off('exit', release);
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+  };
 };
 
 /** Whether `dir` is the top of a git checkout of inixiative/config (not a bunx or npm copy). */
