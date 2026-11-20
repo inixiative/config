@@ -286,8 +286,10 @@ exit 0`,
       {
         env: {
           ...process.env,
-          // A train runs on a developer's machine; under CI `bounded` runs a check as it is.
+          // A train runs on a developer's machine, under no other check: under CI, or under a
+          // `bounded` (this suite's own check), `bounded` runs a check as it is.
           CI: '',
+          INIXIATIVE_BOUNDED: '',
           HOME: base,
           PATH: `${bin}:${process.env.PATH}`,
           GIT_AUTHOR_NAME: 't',
