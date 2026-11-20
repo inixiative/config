@@ -40,7 +40,7 @@ const LOCK_WAIT_EXIT_CODE = 75;
 /** The command that runs `command` holding the flock on `path`, waiting at most `seconds` for it. */
 export const underLock = (path: string, seconds: number, command: readonly string[]): string[] =>
   process.platform === 'linux'
-    ? ['flock', '-E', String(LOCK_WAIT_EXIT_CODE), '-w', String(seconds), path, ...command]
+    ? ['flock', '-o', '-E', String(LOCK_WAIT_EXIT_CODE), '-w', String(seconds), path, ...command]
     : ['lockf', '-k', '-s', '-t', String(seconds), path, ...command];
 
 /** The exit code a shell gives a process that ended this way. */
@@ -119,13 +119,16 @@ const stopGroup = async (pgid: number): Promise<void> => {
 };
 
 /**
- * Run once the lock is held. Descriptor 4 tells `bounded` the wait is over. A watcher then stays
- * beside the command in its group, reading descriptor 3, which only `bounded` holds open: when
- * `bounded` dies, a SIGKILL included, the read ends and the group is killed at once. The shell
- * stays to pass on 128 + the signal for a command a signal ended, which `lockf` reports as 70.
+ * The group's first process. A watcher stays in the group reading descriptor 3, which only
+ * `bounded` holds open: when `bounded` dies, a SIGKILL included, the read ends and the group is
+ * killed at once, a wait for the lock included.
  */
-const HOLDING_THE_LOCK =
-  'echo held >&4; exec 4>&-; (read _ <&3; kill -KILL 0) >/dev/null 2>&1 & "$@"; exit $?';
+const WITH_WATCHER = '(exec 4>&-; read _ <&3; kill -KILL 0) >/dev/null 2>&1 & exec "$@"';
+/**
+ * Run once the lock is held: descriptor 4 tells `bounded` the wait is over. The shell stays to
+ * pass on 128 + the signal for a command a signal ended, which `lockf` reports as 70.
+ */
+const HOLDING_THE_LOCK = 'echo held >&4; exec 4>&- 3<&-; "$@"; exit $?';
 
 /**
  * Run `command` as the machine's one full check: wait for the lock, then stop the command's
@@ -143,6 +146,8 @@ export const runBounded = async (
     sampleMs?: number;
     say?: (line: string) => void;
     memoryOf?: typeof fetchGroupMemory;
+    /** False under another `bounded`, which holds the lock: only the limits apply. */
+    lock?: boolean;
   } = {},
 ): Promise<BoundedOutcome> => {
   if (command.length === 0) throw new Error('bounded: no command given');
@@ -151,19 +156,24 @@ export const runBounded = async (
   const path = options.lockPath ?? checkLockPath();
   const sampleMs = options.sampleMs ?? 10_000;
   mkdirSync(dirname(path), { recursive: true });
-  const [file = '', ...args] = underLock(path, Math.ceil(bounds.waitSeconds), [
+  const holding = ['sh', '-c', HOLDING_THE_LOCK, 'sh', ...command];
+  const child = spawn(
     'sh',
-    '-c',
-    HOLDING_THE_LOCK,
-    'sh',
-    ...command,
-  ]);
-  const child = spawn(file, args, {
-    cwd: options.cwd ?? process.cwd(),
-    stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'],
-    detached: true,
-    env: { ...process.env, [INSIDE_BOUNDED]: String(process.pid) },
-  });
+    [
+      '-c',
+      WITH_WATCHER,
+      'sh',
+      ...(options.lock === false
+        ? holding
+        : underLock(path, Math.ceil(bounds.waitSeconds), holding)),
+    ],
+    {
+      cwd: options.cwd ?? process.cwd(),
+      stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'],
+      detached: true,
+      env: { ...process.env, [INSIDE_BOUNDED]: String(process.pid) },
+    },
+  );
   const pgid = child.pid;
   const exited = new Promise<{ code: number; reason?: string }>((done) => {
     child.on('error', (error) => done({ code: 127, reason: error.message }));
@@ -173,6 +183,7 @@ export const runBounded = async (
   const stop = async () => {
     if (pgid) await stopGroup(pgid);
   };
+  let signalled: number | null = null;
   const stopOnSignal = (
     [
       ['SIGINT', 130],
@@ -181,6 +192,7 @@ export const runBounded = async (
     ] as const
   ).map(([signal, code]) => {
     const handler = () => {
+      signalled = code;
       void stop().finally(() => process.exit(code));
     };
     process.on(signal, handler);
@@ -231,6 +243,8 @@ export const runBounded = async (
     }
   } finally {
     await stop();
+    // A signal to `bounded` ends it with that signal's code, whatever the stopped command gave.
+    if (signalled !== null) process.exit(signalled);
     for (const [signal, handler] of stopOnSignal) process.off(signal, handler);
   }
 };
@@ -241,7 +255,7 @@ export const boundedVerdict = (outcome: BoundedOutcome, bounds: Bounds): string 
   if (outcome.ended === 'not started')
     return `✗ bounded: the command did not start: ${outcome.reason}`;
   if (outcome.ended === 'lock wait')
-    return `✗ bounded: gave up after ${Math.round(bounds.waitSeconds / 60)} min waiting for the machine's check lock (${outcome.path})`;
+    return `✗ bounded: gave up after ${Math.round(bounds.waitSeconds)} s waiting for the machine's check lock (${outcome.path})`;
   const peak = (outcome.peakBytes / 2 ** 30).toFixed(1);
   const most = outcome.heaviest || 'unknown';
   return outcome.ended === 'time limit'

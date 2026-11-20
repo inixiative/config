@@ -65,9 +65,8 @@ const { command, positionals, preset: presetFlag, dryRun, adoptCheckTimeout } = 
 const dir = resolve(command === 'bounded' ? '.' : (positionals[0] ?? '.'));
 
 if (command === 'bounded') {
-  // CI runs one check per machine under its own limits, and a `bounded` under another already
-  // holds the lock and the limits: either way the command runs as it is.
-  if (process.env.CI || process.env[INSIDE_BOUNDED]) {
+  // CI runs one check per runner under the runner's limits: the command runs as it is.
+  if (process.env.CI) {
     const [file, ...args] = positionals;
     const ran = spawnSync(file ?? '', args, { stdio: 'inherit' });
     if (ran.error) {
@@ -82,7 +81,8 @@ if (command === 'bounded') {
     memoryBytes: memoryGb === undefined ? DEFAULT_BOUNDS.memoryBytes : memoryGb * 2 ** 30,
     waitSeconds: waitMinutes === undefined ? DEFAULT_BOUNDS.waitSeconds : waitMinutes * 60,
   };
-  const outcome = await runBounded(positionals, { bounds });
+  // A `bounded` under another keeps its own limits; the outer one holds the lock.
+  const outcome = await runBounded(positionals, { bounds, lock: !process.env[INSIDE_BOUNDED] });
   const verdict = boundedVerdict(outcome, bounds);
   if (verdict) console.error(verdict);
   process.exit(outcome.code);
@@ -427,16 +427,18 @@ if (command === 'train') {
   };
 
   /**
-   * A repo's own check, run as the machine's one full check: `bounded`'s lock, memory ceiling and
-   * time limit (`seconds`, or its default), the whole process group stopped at either.
+   * A repo's own check, run as the machine's one full check (`bounded`): its lock, and the whole
+   * process group stopped at `seconds` or at the backstop. The backstop is loose on purpose: a
+   * repo whose `check` is itself `bounded` keeps its own, tighter limits under this one.
    */
-  const runRepoCheck = (cwd: string, seconds?: number) =>
+  const runRepoCheck = (cwd: string, seconds = 2 * 60 * 60) =>
     spawnSync(
       process.execPath,
       [
-        join(packageRoot, 'src', 'cli.ts'),
+        process.argv[1] ?? '',
         'bounded',
-        ...(seconds === undefined ? [] : [`--minutes=${seconds / 60}`]),
+        `--minutes=${seconds / 60}`,
+        '--memory-gb=24',
         '--',
         'bun',
         'run',

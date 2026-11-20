@@ -149,6 +149,30 @@ describe('bounded', () => {
     expect(free(lockPath)).toBe(true);
   }, 60_000);
 
+  test('SIGINT to bounded exits 130, and a bounded killed while it waits leaves no waiter', async () => {
+    const home = scratch();
+    const lockPath = join(home, '.foundry', 'check.lock');
+    const mark = marker('waiter');
+    const interrupted = spawn('bun', [cli, 'bounded', '--', 'sleep', '60'], {
+      env: cliEnv(home),
+      stdio: 'ignore',
+    });
+    const ended = new Promise<number | null>((done) =>
+      interrupted.on('exit', (code) => done(code)),
+    );
+    expect(await until(() => existsSync(lockPath) && !free(lockPath), 20_000)).toBe(true);
+    const waiting = spawn('bun', [cli, 'bounded', '--', 'sh', '-c', `sleep 60; : ${mark}`], {
+      env: cliEnv(home),
+      stdio: 'ignore',
+    });
+    expect(await until(() => alive(mark), 20_000)).toBe(true);
+    waiting.kill('SIGKILL');
+    expect(await until(() => !alive(mark), 20_000)).toBe(true);
+    interrupted.kill('SIGINT');
+    expect(await ended).toBe(130);
+    expect(free(lockPath)).toBe(true);
+  }, 90_000);
+
   test('a second check waits for the first, then runs', async () => {
     const dir = scratch();
     const lockPath = join(dir, 'check.lock');
@@ -189,7 +213,7 @@ describe('bounded', () => {
     holder.kill();
     expect(outcome).toEqual({ ended: 'lock wait', code: 75, path: lockPath });
     expect(boundedVerdict(outcome, { ...DEFAULT_BOUNDS, waitSeconds: 120 })).toBe(
-      `✗ bounded: gave up after 2 min waiting for the machine's check lock (${lockPath})`,
+      `✗ bounded: gave up after 120 s waiting for the machine's check lock (${lockPath})`,
     );
   }, 30_000);
 
@@ -225,7 +249,7 @@ describe('bounded', () => {
     expect(exitCodeOf(2, null)).toBe(2);
   });
 
-  test('the CLI: flags after -- reach the command, -- is required, a bounded under a bounded runs as it is', () => {
+  test('the CLI: flags after -- reach the command, -- is required, a bounded under a bounded takes no lock and keeps its limits', () => {
     const home = scratch();
     const run = (args: string[], env = cliEnv(home)) =>
       spawnSync('bun', [cli, 'bounded', ...args], { encoding: 'utf8', env });
@@ -253,6 +277,9 @@ describe('bounded', () => {
       'exit 5',
     ]);
     expect(nested.status).toBe(5);
+    const nestedLimit = run(['--', 'bun', cli, 'bounded', '--minutes=0.01', '--', 'sleep', '60']);
+    expect(nestedLimit.status).toBe(124);
+    expect(nestedLimit.stderr).toContain('time limit');
     const inCi = run(['--', 'sh', '-c', 'kill -TERM $$'], { ...cliEnv(home), CI: 'true' });
     expect(inCi.status).toBe(143);
     const missingInCi = run(['--', 'no-such-command-here'], { ...cliEnv(home), CI: 'true' });
