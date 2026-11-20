@@ -11,7 +11,14 @@ import {
 import { hostname, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { type CommandLine, parseCommandLine, UsageError } from './args';
-import { boundedVerdict, DEFAULT_BOUNDS, exitCodeOf, INSIDE_BOUNDED, runBounded } from './bounded';
+import {
+  boundedVerdict,
+  DEFAULT_BOUNDS,
+  exitCodeOf,
+  INSIDE_BOUNDED,
+  runBounded,
+  TIME_LIMIT_EXIT_CODE,
+} from './bounded';
 import {
   acquireTrainLock,
   activeCandidates,
@@ -58,9 +65,8 @@ const { command, positionals, preset: presetFlag, dryRun, adoptCheckTimeout } = 
 const dir = resolve(command === 'bounded' ? '.' : (positionals[0] ?? '.'));
 
 if (command === 'bounded') {
-  // CI runs one check per machine under its own limits, and a `bounded` under another already
-  // holds the lock and the limits: either way the command runs as it is.
-  if (process.env.CI || process.env[INSIDE_BOUNDED]) {
+  // CI runs one check per runner under the runner's limits: the command runs as it is.
+  if (process.env.CI) {
     const [file, ...args] = positionals;
     const ran = spawnSync(file ?? '', args, { stdio: 'inherit' });
     if (ran.error) {
@@ -75,7 +81,8 @@ if (command === 'bounded') {
     memoryBytes: memoryGb === undefined ? DEFAULT_BOUNDS.memoryBytes : memoryGb * 2 ** 30,
     waitSeconds: waitMinutes === undefined ? DEFAULT_BOUNDS.waitSeconds : waitMinutes * 60,
   };
-  const outcome = await runBounded(positionals, { bounds });
+  // A `bounded` under another keeps its own limits; the outer one holds the lock.
+  const outcome = await runBounded(positionals, { bounds, lock: !process.env[INSIDE_BOUNDED] });
   const verdict = boundedVerdict(outcome, bounds);
   if (verdict) console.error(verdict);
   process.exit(outcome.code);
@@ -419,6 +426,27 @@ if (command === 'train') {
     };
   };
 
+  /**
+   * A repo's own check, run as the machine's one full check (`bounded`): its lock, and the whole
+   * process group stopped at `seconds` or at the backstop. The backstop is loose on purpose: a
+   * repo whose `check` is itself `bounded` keeps its own, tighter limits under this one.
+   */
+  const runRepoCheck = (cwd: string, seconds = 2 * 60 * 60) =>
+    spawnSync(
+      process.execPath,
+      [
+        process.argv[1] ?? '',
+        'bounded',
+        `--minutes=${seconds / 60}`,
+        '--memory-gb=24',
+        '--',
+        'bun',
+        'run',
+        'check',
+      ],
+      { cwd, stdio: 'inherit' },
+    ).status;
+
   /** Re-lock onto the blessed set and, unless told otherwise, run the repo's own check. */
   const relockAndCheck = (checkout: Checkout, check = true) =>
     effect(`re-lock ${checkout.name}${check ? ' and run its check' : ''}`, undefined, () => {
@@ -435,10 +463,7 @@ if (command === 'train') {
       )) {
         spawnSync('bun', ['update', ...names], { cwd, stdio: 'inherit' });
       }
-      if (
-        check &&
-        spawnSync('bun', ['run', 'check'], { cwd: checkout.dir, stdio: 'inherit' }).status !== 0
-      ) {
+      if (check && runRepoCheck(checkout.dir) !== 0) {
         throw new CheckFailed(`check failed in ${checkout.name}`);
       }
     });
@@ -693,16 +718,11 @@ if (command === 'train') {
                 reason = 'train:adopt failed';
                 console.log(`⚠ train:adopt failed in ${checkout.name} — ${leftOut}`);
               } else {
-                const check = spawnSync('bun', ['run', 'check'], {
-                  cwd: branchCheckout.dir,
-                  stdio: 'inherit',
-                  timeout: adoptCheckTimeout * 1000,
-                  killSignal: 'SIGKILL',
-                });
-                if (check.status !== 0) {
+                const check = runRepoCheck(branchCheckout.dir, adoptCheckTimeout);
+                if (check !== 0) {
                   reason = 'check failed after train:adopt';
                   console.log(
-                    check.error || check.signal
+                    check === TIME_LIMIT_EXIT_CODE
                       ? `⚠ check timed out after ${adoptCheckTimeout}s in ${checkout.name} after train:adopt — ${leftOut}`
                       : `⚠ check still fails in ${checkout.name} after train:adopt — ${leftOut}`,
                   );
@@ -1121,8 +1141,7 @@ if (command === 'train') {
       },
     );
     effect('run bun run check in @inixiative/config', undefined, () => {
-      const check = spawnSync('bun', ['run', 'check'], { cwd: packageRoot, stdio: 'inherit' });
-      if (check.status !== 0) {
+      if (runRepoCheck(packageRoot) !== 0) {
         console.error('✗ check failed in @inixiative/config — aborting before publish');
         process.exit(1);
       }

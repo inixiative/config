@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -264,7 +265,8 @@ esac`,
   shim(
     'bun',
     `case "$1 $2" in
-"run check") [ -f check-writes ] && touch check-artifact.txt
+"run check") [ -n "$INIXIATIVE_BOUNDED" ] && echo "check runs under bounded (in $PWD)" >> "${log}"
+  [ -f check-writes ] && touch check-artifact.txt
   case "$PWD" in *.worktrees*) [ -f check-hangs ] && exec sleep 30 ;; esac
   [ -f check-always-fails ] && exit 1; [ -f needs-adopt ] && [ ! -f adopted ] && { touch generated.txt; exit 1; }; exit 0 ;;
 "run train:adopt") touch drift.pending.json
@@ -284,6 +286,10 @@ exit 0`,
       {
         env: {
           ...process.env,
+          // A train runs on a developer's machine, under no other check: under CI, or under a
+          // `bounded` (this suite's own check), `bounded` runs a check as it is.
+          CI: '',
+          INIXIATIVE_BOUNDED: '',
           HOME: base,
           PATH: `${bin}:${process.env.PATH}`,
           GIT_AUTHOR_NAME: 't',
@@ -584,6 +590,14 @@ describe('two-phase blessing', () => {
     expect(out).toContain(
       `@inixiative/foundry: ${adoption} — incomplete (check failed after train:adopt)`,
     );
+  }, 60_000);
+
+  test("every check the train runs is the machine's one full check", () => {
+    const { train, at, config, calls } = offlineTrain();
+    train();
+    for (const dir of [at('archive'), at('foundry'), at('oracle'), config])
+      expect(calls()).toContain(`check runs under bounded (in ${realpathSync(dir)})`);
+    expect(calls()).toMatch(/check runs under bounded \(in .*\.worktrees/);
   }, 60_000);
 
   test('a dry run says how an adoption would be decided', () => {
