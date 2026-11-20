@@ -1,17 +1,17 @@
 import { describe, expect, test } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { hostname, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   boundedVerdict,
-  type CheckLockHolder,
   DEFAULT_BOUNDS,
   exitCodeOf,
   groupProcessesInTop,
   runBounded,
+  underLock,
 } from '../src/bounded';
-import { packageRoot, processStart } from '../src/lib';
+import { packageRoot } from '../src/lib';
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'bounded-'));
 /** No real memory reading: `top` takes about a second, in which a short test command has ended. */
@@ -25,6 +25,11 @@ const until = async (done: () => boolean, ms: number) => {
   }
   return done();
 };
+/** Whether nobody holds the flock on `path` (the file itself stays, as `lockf -k` leaves it). */
+const free = (path: string) => {
+  const [file = '', ...args] = underLock(path, 0, ['true']);
+  return spawnSync(file, args).status === 0;
+};
 const marker = (name: string) => `bounded-${name}-${process.pid}-${Date.now()}`;
 const cli = join(packageRoot, 'src', 'cli.ts');
 const cliEnv = (home: string) => ({ ...process.env, HOME: home, CI: '', INIXIATIVE_BOUNDED: '' });
@@ -36,7 +41,7 @@ describe('bounded', () => {
       ended: 'exited',
       code: 3,
     });
-    expect(existsSync(lockPath)).toBe(false);
+    expect(free(lockPath)).toBe(true);
   });
 
   test('past the time limit the whole process group is stopped, grandchildren included', async () => {
@@ -48,7 +53,7 @@ describe('bounded', () => {
     );
     expect(outcome).toMatchObject({ ended: 'time limit', code: 124 });
     expect(alive(mark)).toBe(false);
-    expect(existsSync(lockPath)).toBe(false);
+    expect(free(lockPath)).toBe(true);
   }, 30_000);
 
   test('past the memory ceiling the group is stopped and the heaviest process is named', async () => {
@@ -120,9 +125,7 @@ describe('bounded', () => {
       env: cliEnv(home),
       stdio: 'ignore',
     });
-    expect(await until(() => existsSync(join(home, '.inixiative', 'check.lock')), 20_000)).toBe(
-      true,
-    );
+    expect(await until(() => existsSync(join(home, '.foundry', 'check.lock')), 20_000)).toBe(true);
     await until(() => false, 500);
     bounded.kill('SIGKILL');
     expect(await until(() => !alive(mark), 20_000)).toBe(true);
@@ -131,7 +134,7 @@ describe('bounded', () => {
   test('a signal to bounded stops a command that ignores SIGTERM before the lock is freed', async () => {
     const home = scratch();
     const mark = marker('stubborn');
-    const lockPath = join(home, '.inixiative', 'check.lock');
+    const lockPath = join(home, '.foundry', 'check.lock');
     const bounded = spawn(
       'bun',
       [cli, 'bounded', '--', 'sh', '-c', `trap "" TERM; sleep 60 & wait; : ${mark}`],
@@ -143,7 +146,7 @@ describe('bounded', () => {
     bounded.kill('SIGTERM');
     expect(await ended).toBe(143);
     expect(alive(mark)).toBe(false);
-    expect(existsSync(lockPath)).toBe(false);
+    expect(free(lockPath)).toBe(true);
   }, 60_000);
 
   test('a second check waits for the first, then runs', async () => {
@@ -170,51 +173,47 @@ describe('bounded', () => {
       'b-end',
     ]);
     expect(said).toHaveLength(1);
-    expect(said[0]).toContain(`on ${hostname()}`);
     expect(said[0]).toContain(lockPath);
   }, 30_000);
 
-  test('a wait longer than waitSeconds gives up with exit 75 and names the holder and the lock', async () => {
+  test('a wait longer than waitSeconds gives up with exit 75 and names the lock', async () => {
     const lockPath = join(scratch(), 'check.lock');
-    const holder: CheckLockHolder = {
-      pid: process.pid,
-      hostname: hostname(),
-      processStart: processStart(process.pid),
-      startedAt: '2026-11-19T00:00:00.000Z',
-      cwd: '/code/kingdom',
-      command: 'bun run check:all',
-    };
-    writeFileSync(lockPath, `${JSON.stringify(holder, null, 2)}\n`);
+    const [file = '', ...args] = underLock(lockPath, 0, ['sleep', '5']);
+    const holder = spawn(file, args, { stdio: 'ignore' });
+    await until(() => !free(lockPath), 5_000);
     const outcome = await runBounded(['true'], {
       ...quiet,
       lockPath,
       bounds: { waitSeconds: 0.3 },
     });
-    expect(outcome).toEqual({ ended: 'lock wait', code: 75, heldBy: holder, path: lockPath });
-    expect(boundedVerdict(outcome, { ...DEFAULT_BOUNDS, waitSeconds: 90 })).toBe(
-      `✗ bounded: gave up after 90 s waiting for the check in /code/kingdom (pid ${process.pid} on ${hostname()}); if that check is gone, remove ${lockPath}`,
+    holder.kill();
+    expect(outcome).toEqual({ ended: 'lock wait', code: 75, path: lockPath });
+    expect(boundedVerdict(outcome, { ...DEFAULT_BOUNDS, waitSeconds: 120 })).toBe(
+      `✗ bounded: gave up after 2 min waiting for the machine's check lock (${lockPath})`,
     );
-  });
+  }, 30_000);
 
-  test('a lock left by a dead check is taken over', async () => {
-    const lockPath = join(scratch(), 'check.lock');
-    const dead = spawnSync('sh', ['-c', 'echo $$'], { encoding: 'utf8' }).stdout.trim();
-    writeFileSync(
+  test('it queues with a plain lockf on the same file, and a file left behind is no lock', async () => {
+    const dir = scratch();
+    const lockPath = join(dir, 'check.lock');
+    const log = join(dir, 'order.log');
+    writeFileSync(lockPath, '');
+    const [file = '', ...args] = underLock(lockPath, 30, [
+      'sh',
+      '-c',
+      `echo a-start >> ${log}; sleep 1; echo a-end >> ${log}`,
+    ]);
+    const plain = spawn(file, args, { stdio: 'ignore' });
+    const ended = new Promise((done) => plain.on('exit', done));
+    await until(() => existsSync(log), 5_000);
+    const outcome = await runBounded(['sh', '-c', `echo b-start >> ${log}`], {
+      ...quiet,
       lockPath,
-      JSON.stringify({
-        pid: Number(dead),
-        hostname: hostname(),
-        processStart: null,
-        startedAt: '',
-        cwd: '/gone',
-        command: 'x',
-      }),
-    );
-    expect(await runBounded(['true'], { ...quiet, lockPath })).toEqual({
-      ended: 'exited',
-      code: 0,
     });
-  });
+    await ended;
+    expect(outcome).toEqual({ ended: 'exited', code: 0 });
+    expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['a-start', 'a-end', 'b-start']);
+  }, 30_000);
 
   test('a command that does not exist exits 127 and says why; one killed by a signal exits 128 + the signal', async () => {
     const lockPath = join(scratch(), 'check.lock');
