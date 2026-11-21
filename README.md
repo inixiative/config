@@ -121,8 +121,7 @@ The train runs every repo's check through `bounded` (the re-lock check, the chec
 | `signetDemo`, `medicalQuestionStep` | every doc | nothing; demos live in template-workbench |
 | `kingdom-workspace`, `foundry-lab`, `native-candidate` | every doc | the canonical repos |
 | foundry-oracle | every doc | Foundry and Oracle, two products |
-| "your own LLM/API keys" | every doc | your own subscriptions |
-| Cartographer, Librarian, Artificer, Steward (capitalised) | READMEs, package descriptions, site pages only | say what it does; Foundry's code still has a Librarian and a Cartographer |
+| Cartographer, Librarian, Artificer, Steward (capitalised) | READMEs, package descriptions, site pages only | say what it does: Wardens remind your agent of what already exists; your agent decides |
 
 Left out on purpose, because a pattern would flag mostly legitimate text: "medical" (the doctor's-visit story is allowed in marketing), "Connection" and `connectionId` (WebSocket and database connections; Foundry's viewer has a live per-socket `connectionId`), "principal" (the permissions README's glossary word for any holder, job titles, the principal–agent problem), and "Cursor as a runtime" or "token savings" (a phrase can't tell a claim from a comparison).
 

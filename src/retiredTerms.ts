@@ -74,16 +74,11 @@ export const RETIRED_TERMS: readonly RetiredTerm[] = [
     instead: 'Foundry and Oracle, two products',
   },
   {
-    id: 'own-llm-keys',
-    pattern: /\byour own (?:LLM|model|API) keys?\b/gi,
-    scope: 'docs',
-    instead: 'your own subscriptions (Foundry runs on subscription logins)',
-  },
-  {
     id: 'foundry-roles',
     pattern: /\b(?:Cartographer|Librarian|Artificer|Steward)s?\b/g,
     scope: 'public',
-    instead: 'say what it does: Wardens point at what exists; your agent decides',
+    instead:
+      'say what it does: Wardens remind your agent of what already exists; your agent decides',
   },
 ];
 

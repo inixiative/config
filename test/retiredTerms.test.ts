@@ -24,7 +24,7 @@ const errors = (fixture: string) =>
     .map((finding) => finding.message);
 
 describe('retired terms: pass', () => {
-  test('clean copy passes: connections, the medical story, principal, castle icons, a changelog, generated regions', () => {
+  test('clean copy passes: connections, the medical story, principal, castle icons, BYOT / API keys, a changelog, generated regions', () => {
     expect(checkRetiredTerms(join(fixtures, 'pass/clean')).findings).toEqual([]);
   });
 
@@ -53,13 +53,13 @@ describe('retired terms: fail', () => {
 
   test('a retired Foundry role name in a README fails', () => {
     expect(errors('fail/public-role')).toEqual([
-      expect.stringContaining('README.md:1: "Artificer" (foundry-roles)'),
+      'retired term in README.md:1: "Artificer" (foundry-roles) → say what it does: Wardens remind your agent of what already exists; your agent decides',
     ]);
   });
 
   test('a package description is a public surface', () => {
     expect(errors('fail/package-description')).toEqual([
-      expect.stringContaining('package.json:1: "Your own LLM keys" (own-llm-keys)'),
+      expect.stringContaining('package.json:1: "Artificer" (foundry-roles)'),
     ]);
   });
 
@@ -105,7 +105,7 @@ describe('writing the baseline', () => {
     const dir = clone('fail/stale-baseline');
     expect(writeRetiredTermsBaseline(dir)).toEqual({ written: 1, refused: [] });
     expect(checkRetiredTerms(dir).findings.map((finding) => finding.level)).toEqual(['warn']);
-    writeFileSync(join(dir, 'README.md'), 'Wardens point at what exists.\n');
+    writeFileSync(join(dir, 'README.md'), 'Wardens remind your agent of what already exists.\n');
     expect(writeRetiredTermsBaseline(dir)).toEqual({ written: 0, refused: [] });
     expect(existsSync(join(dir, RETIRED_TERMS_DIR, 'baseline.txt'))).toBe(false);
   });

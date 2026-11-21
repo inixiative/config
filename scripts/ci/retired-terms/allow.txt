@@ -8,5 +8,4 @@ README.md	runtime-keys
 README.md	medical-demo
 README.md	retired-workspaces
 README.md	foundry-oracle
-README.md	own-llm-keys
 README.md	foundry-roles
