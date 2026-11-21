@@ -13,9 +13,11 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { type CommandLine, parseCommandLine, UsageError } from './args';
 import {
   boundedVerdict,
+  checkLockPath,
   DEFAULT_BOUNDS,
   exitCodeOf,
   INSIDE_BOUNDED,
+  lockWrapperAbove,
   runBounded,
   TIME_LIMIT_EXIT_CODE,
 } from './bounded';
@@ -81,6 +83,12 @@ if (command === 'bounded') {
     memoryBytes: memoryGb === undefined ? DEFAULT_BOUNDS.memoryBytes : memoryGb * 2 ** 30,
     waitSeconds: waitMinutes === undefined ? DEFAULT_BOUNDS.waitSeconds : waitMinutes * 60,
   };
+  if (!process.env[INSIDE_BOUNDED] && lockWrapperAbove(checkLockPath())) {
+    console.error(
+      `✗ bounded: this check was started under a lockf or flock on ${checkLockPath()}, which holds the lock the check waits for. Run it plain: \`bun run check\` queues by itself.`,
+    );
+    process.exit(2);
+  }
   // A `bounded` under another keeps its own limits; the outer one holds the lock.
   const outcome = await runBounded(positionals, { bounds, lock: !process.env[INSIDE_BOUNDED] });
   const verdict = boundedVerdict(outcome, bounds);
@@ -428,11 +436,14 @@ if (command === 'train') {
 
   /**
    * A repo's own check, run as the machine's one full check (`bounded`): its lock, and the whole
-   * process group stopped at `seconds` or at the backstop. The backstop is loose on purpose: a
-   * repo whose `check` is itself `bounded` keeps its own, tighter limits under this one.
+   * process group stopped at `seconds` or at the backstop. It runs the chain, `check:all`, so the
+   * train's limits are the ones that apply; a repo still without one runs its `check`.
    */
-  const runRepoCheck = (cwd: string, seconds = 2 * 60 * 60) =>
-    spawnSync(
+  const runRepoCheck = (cwd: string, seconds = 2 * 60 * 60) => {
+    const { scripts } = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    return spawnSync(
       process.execPath,
       [
         process.argv[1] ?? '',
@@ -442,10 +453,11 @@ if (command === 'train') {
         '--',
         'bun',
         'run',
-        'check',
+        scripts?.['check:all'] ? 'check:all' : 'check',
       ],
       { cwd, stdio: 'inherit' },
     ).status;
+  };
 
   /** Re-lock onto the blessed set and, unless told otherwise, run the repo's own check. */
   const relockAndCheck = (checkout: Checkout, check = true) =>

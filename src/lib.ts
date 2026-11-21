@@ -203,8 +203,16 @@ const REQUIRED_SCRIPTS: Record<string, string> = {
   typecheck: 'tsc --noEmit',
   lint: 'biome check .',
   test: 'bun test',
-  check: 'bun run typecheck && bun run lint && bun run test',
 };
+
+const DEFAULT_CHECK_CHAIN = 'bun run typecheck && bun run lint && bun run test';
+
+/** A repo's `check`: its own chain, `check:all`, run as the machine's one full check. */
+export const BOUNDED_CHECK = 'inixiative-config bounded -- bun run check:all';
+/** This package has no installed copy of itself: its `check` runs the CLI from source. */
+export const OWN_BOUNDED_CHECK = 'bun src/cli.ts bounded -- bun run check:all';
+const boundedCheckWithLimits =
+  /^(inixiative-config|bun src\/cli\.ts) bounded( --[a-z-]+=[\d.]+)* -- bun run check:all$/;
 
 const DEP_FIELDS: DepField[] = ['dependencies', 'devDependencies', 'peerDependencies'];
 
@@ -785,6 +793,39 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
           : undefined,
       });
     }
+  }
+
+  // `check` runs `check:all`, the repo's own chain, through `bounded`; this rule owns both scripts.
+  const check = pkg.scripts?.check;
+  const chain = pkg.scripts?.['check:all'];
+  const boundedCheck = pkg.name === '@inixiative/config' ? OWN_BOUNDED_CHECK : BOUNDED_CHECK;
+  if (check && boundedCheckWithLimits.test(check)) {
+    if (!chain) {
+      findings.push({
+        level: 'error',
+        message: `scripts.check:all missing → "${DEFAULT_CHECK_CHAIN}"`,
+        fix: () => {
+          pkg.scripts ??= {};
+          pkg.scripts['check:all'] = DEFAULT_CHECK_CHAIN;
+          touch();
+        },
+      });
+    }
+  } else {
+    // A chain is only ever moved whole: one that would be lost, or that already names `bounded`, is the repo's to settle.
+    const movable = !check?.includes('bounded') && (!check || !chain);
+    findings.push({
+      level: 'error',
+      message: `scripts.check does not run through bounded (one full check at a time on the machine, inside a time limit and a memory ceiling) → "${boundedCheck}", with its chain in scripts.check:all${movable ? '' : ' (not rewritten: scripts.check and scripts.check:all both hold a chain, or scripts.check names bounded another way; settle them by hand)'}`,
+      fix: movable
+        ? () => {
+            pkg.scripts ??= {};
+            pkg.scripts['check:all'] = check ?? chain ?? DEFAULT_CHECK_CHAIN;
+            pkg.scripts.check = boundedCheck;
+            touch();
+          }
+        : undefined,
+    });
   }
 
   for (const [script, fallback] of Object.entries(REQUIRED_SCRIPTS)) {

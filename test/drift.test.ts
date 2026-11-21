@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   admits,
+  BOUNDED_CHECK,
   inspect,
   LEFTHOOK_PREPARE,
   loadManifest,
@@ -446,6 +447,72 @@ describe('drift detection and sync', () => {
     writeFileSync(join(dir, 'biome.json'), '');
     const broken = inspect(dir, manifest);
     expect(broken.findings.length).toBeGreaterThan(0);
+  });
+});
+
+describe('the check script', () => {
+  test('a plain check chain moves to check:all and check runs it through bounded', () => {
+    const dir = clone('consumer-node');
+    const chain = 'bun run setup && bun run lint && bun run test';
+    const pkg = readPkg(dir);
+    pkg.scripts.check = chain;
+    delete pkg.scripts['check:all'];
+    writeFileSync(join(dir, 'package.json'), JSON.stringify(pkg, null, 2));
+
+    const { findings, flush } = inspect(dir, manifest);
+    const about = findings.filter((finding) => finding.message.includes('scripts.check'));
+    expect(about.map((finding) => finding.message)).toEqual([
+      expect.stringContaining('does not run through bounded'),
+    ]);
+    for (const finding of about) finding.fix?.();
+    flush();
+
+    expect(readPkg(dir).scripts.check).toBe(BOUNDED_CHECK);
+    expect(readPkg(dir).scripts['check:all']).toBe(chain);
+    expect(inspect(dir, manifest).findings).toEqual([]);
+  });
+
+  test('its own limits are accepted; no check at all gets both scripts', () => {
+    const dir = clone('consumer-node');
+    const pkg = readPkg(dir);
+    pkg.scripts.check =
+      'inixiative-config bounded --minutes=60 --memory-gb=16 -- bun run check:all';
+    writeFileSync(join(dir, 'package.json'), JSON.stringify(pkg, null, 2));
+    expect(inspect(dir, manifest).findings).toEqual([]);
+
+    delete pkg.scripts.check;
+    delete pkg.scripts['check:all'];
+    writeFileSync(join(dir, 'package.json'), JSON.stringify(pkg, null, 2));
+    const { findings, flush } = inspect(dir, manifest);
+    for (const finding of findings) finding.fix?.();
+    flush();
+    expect(readPkg(dir).scripts.check).toBe(BOUNDED_CHECK);
+    expect(readPkg(dir).scripts['check:all']).toBe(
+      'bun run typecheck && bun run lint && bun run test',
+    );
+  });
+});
+
+describe('the check script, when a chain would be lost', () => {
+  test('two chains, or a check that names bounded another way, are flagged and left alone', () => {
+    for (const scripts of [
+      { check: 'bun run lint && bun run e2e', 'check:all': 'bun run lint' },
+      { check: 'bunx @inixiative/config bounded -- bun run lint && bun run test' },
+    ]) {
+      const dir = clone('consumer-node');
+      const pkg = readPkg(dir);
+      delete pkg.scripts['check:all'];
+      Object.assign(pkg.scripts, scripts);
+      writeFileSync(join(dir, 'package.json'), JSON.stringify(pkg, null, 2));
+
+      const { findings, flush } = inspect(dir, manifest);
+      expect(findings.map((finding) => finding.message)).toEqual([
+        expect.stringContaining('settle them by hand'),
+      ]);
+      for (const finding of findings) finding.fix?.();
+      flush();
+      expect(readPkg(dir).scripts).toEqual(pkg.scripts);
+    }
   });
 });
 
