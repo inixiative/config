@@ -13,7 +13,7 @@
     "@types/bun"
   ],
   "ecosystem": {
-    "@inixiative/config": "0.5.239",
+    "@inixiative/config": "0.5.240",
     "@inixiative/field-map": "0.1.1",
     "@inixiative/json-rules": "3.16.0",
     "@inixiative/permissions": "0.25.0",
@@ -53,8 +53,8 @@
   },
   "candidates": {
     "@inixiative/atlas": "0.5.1",
-    "@inixiative/json-rules": "4.3.0",
-    "@inixiative/agent-session": "0.22.0",
+    "@inixiative/json-rules": "4.5.0",
+    "@inixiative/agent-session": "0.21.0",
     "@inixiative/field-map": "0.1.2",
     "@inixiative/archive": "0.35.0"
   }
