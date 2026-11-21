@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@inixiative/permissions": "^0.21.1",
+    "@inixiative/permissions": "^0.25.0",
     "fixture-lib": "workspace:*"
   }
 }
