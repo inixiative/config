@@ -1,5 +1,13 @@
 import { beforeAll, describe, expect, test } from 'bun:test';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -241,7 +249,7 @@ describe('lefthook standardization', () => {
     writeFileSync(join(dir, 'package.json'), JSON.stringify(pkg, null, 2));
 
     const { findings, flush } = inspect(dir, manifest);
-    const unguarded = findings.find((finding) => finding.message.includes('unguarded'));
+    const unguarded = findings.find((finding) => finding.message.includes('main-checkout guard'));
     expect(unguarded).toBeDefined();
     unguarded?.fix?.();
     flush();
@@ -249,6 +257,55 @@ describe('lefthook standardization', () => {
     expect(readPkg(dir).scripts.prepare).toBe(`${LEFTHOOK_PREPARE} && bun run build`);
     const residual = inspect(dir, manifest).findings.map((finding) => finding.message);
     expect(residual).not.toContainEqual(expect.stringContaining('prepare'));
+  });
+
+  test('upgrades the older git-only guard to the main-checkout guard without nesting it', () => {
+    const dir = clone('consumer-node');
+    Bun.spawnSync(['git', 'init'], { cwd: dir, stdout: 'ignore', stderr: 'ignore' });
+    const pkg = readPkg(dir);
+    pkg.scripts = {
+      ...pkg.scripts,
+      prepare: 'if git rev-parse --git-dir >/dev/null 2>&1; then lefthook install; fi',
+    };
+    writeFileSync(join(dir, 'package.json'), JSON.stringify(pkg, null, 2));
+
+    const { findings, flush } = inspect(dir, manifest);
+    findings.find((finding) => finding.message.includes('main-checkout guard'))?.fix?.();
+    flush();
+
+    expect(readPkg(dir).scripts.prepare).toBe(LEFTHOOK_PREPARE);
+    const residual = inspect(dir, manifest).findings.map((finding) => finding.message);
+    expect(residual).not.toContainEqual(expect.stringContaining('prepare'));
+  });
+
+  test('prepare installs hooks with the main checkout lefthook from every worktree, and never without git', () => {
+    const root = mkdtempSync(join(tmpdir(), 'prepare-hooks-'));
+    const main = join(root, 'main');
+    const worktree = join(root, 'worktree');
+    const noGit = join(root, 'no-git');
+    mkdirSync(join(main, 'node_modules', '.bin'), { recursive: true });
+    mkdirSync(noGit);
+    const git = (...args: string[]) =>
+      Bun.spawnSync(['git', ...args], { cwd: main, stdout: 'ignore', stderr: 'ignore' });
+    git('init');
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-m', 'init');
+    git('worktree', 'add', worktree);
+    const runPrepare = (cwd: string) =>
+      Bun.spawnSync(['sh', '-c', LEFTHOOK_PREPARE], {
+        cwd,
+        env: { ...process.env, GIT_CEILING_DIRECTORIES: root },
+      })
+        .stdout.toString()
+        .trim();
+
+    expect(runPrepare(main)).toBe('');
+
+    const lefthook = join(main, 'node_modules', '.bin', 'lefthook');
+    writeFileSync(lefthook, '#!/bin/sh\necho "$1 from $(pwd -P)"\n', { mode: 0o755 });
+    const installedFromMain = `install from ${realpathSync(main)}`;
+    expect(runPrepare(main)).toBe(installedFromMain);
+    expect(runPrepare(worktree)).toBe(installedFromMain);
+    expect(runPrepare(noGit)).toBe('');
   });
 
   test('replaces a divergent lefthook.yml with the extends stub', () => {
