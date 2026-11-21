@@ -29,10 +29,7 @@ export const INSIDE_BOUNDED = 'INIXIATIVE_BOUNDED';
 /** `bounded`'s exit code when the time limit stopped the command, as `timeout(1)`'s. */
 export const TIME_LIMIT_EXIT_CODE = 124;
 
-/**
- * The machine's one slot for full checks: the flock(2) file every session already queues on
- * (`lockf -k -t 14400 ~/.foundry/check.lock bun run check`), so both forms wait for each other.
- */
+/** The machine's one slot for full checks: a flock(2) file, free again when its holder dies. */
 export const checkLockPath = (): string => join(homedir(), '.foundry', 'check.lock');
 /** `lockf`'s exit code (EX_TEMPFAIL) when the lock stayed held for the whole wait. */
 const LOCK_WAIT_EXIT_CODE = 75;
@@ -42,6 +39,23 @@ export const underLock = (path: string, seconds: number, command: readonly strin
   process.platform === 'linux'
     ? ['flock', '-o', '-E', String(LOCK_WAIT_EXIT_CODE), '-w', String(seconds), path, ...command]
     : ['lockf', '-k', '-s', '-t', String(seconds), path, ...command];
+
+/**
+ * The `lockf` or `flock` on `path` that this process runs under, when a session wrapped the check
+ * in one: it holds the lock a `bounded` below it would wait for.
+ */
+export const lockWrapperAbove = (path: string, from = process.ppid): string | null => {
+  let pid = from;
+  for (let depth = 0; depth < 40 && pid > 1; depth++) {
+    const ps = spawnSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)], { encoding: 'utf8' });
+    const match = /^\s*(\d+)\s+(.*)$/.exec((ps.stdout ?? '').trim());
+    if (!match) return null;
+    const command = match[2] ?? '';
+    if (/(^|\/)(lockf|flock)\s/.test(command) && command.includes(path)) return command;
+    pid = Number(match[1]);
+  }
+  return null;
+};
 
 /** The exit code a shell gives a process that ended this way. */
 export const exitCodeOf = (code: number | null, signal: NodeJS.Signals | null): number =>

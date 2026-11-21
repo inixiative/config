@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -280,6 +280,17 @@ describe('bounded', () => {
     const nestedLimit = run(['--', 'bun', cli, 'bounded', '--minutes=0.01', '--', 'sleep', '60']);
     expect(nestedLimit.status).toBe(124);
     expect(nestedLimit.stderr).toContain('time limit');
+    mkdirSync(join(home, '.foundry'), { recursive: true });
+    const [lockf = '', ...lockfArgs] = underLock(join(home, '.foundry', 'check.lock'), 0, [
+      'bun',
+      cli,
+      'bounded',
+      '--',
+      'true',
+    ]);
+    const wrapped = spawnSync(lockf, lockfArgs, { encoding: 'utf8', env: cliEnv(home) });
+    expect(wrapped.status).toBe(2);
+    expect(wrapped.stderr).toContain('Run it plain');
     const inCi = run(['--', 'sh', '-c', 'kill -TERM $$'], { ...cliEnv(home), CI: 'true' });
     expect(inCi.status).toBe(143);
     const missingInCi = run(['--', 'no-such-command-here'], { ...cliEnv(home), CI: 'true' });

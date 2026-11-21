@@ -1,6 +1,6 @@
 {
   "name": "@inixiative/config",
-  "version": "0.5.240",
+  "version": "0.5.241",
   "description": "Shared toolchain and theme for the inixiative packages: tsconfig/biome/tsup presets, theme CSS, a version manifest (BOM), and a sync/check/train CLI",
   "type": "module",
   "license": "MIT",
@@ -51,7 +51,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "format": "biome format --write .",
-    "check": "bun run typecheck && bun run lint && bun run test",
+    "check:all": "bun run typecheck && bun run lint && bun run test",
+    "check": "bun src/cli.ts bounded -- bun run check:all",
     "prepublishOnly": "bun run check && bun run build"
   },
   "packageManager": "bun@1.4.4",
