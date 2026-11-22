@@ -58,6 +58,6 @@
     "@inixiative/field-map": "0.1.2",
     "@inixiative/archive": "0.35.0",
     "@inixiative/permissions": "0.27.0",
-    "@inixiative/signet": "0.26.0"
+    "@inixiative/signet": "0.26.2"
   }
 }
