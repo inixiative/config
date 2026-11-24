@@ -36,7 +36,8 @@
   "consumers": {
     "inixiative/template": {
       "lanes": [
-        "primitives"
+        "primitives",
+        "agentic"
       ]
     },
     "inixiative/kingdom": {
