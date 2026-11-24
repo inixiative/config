@@ -76,6 +76,7 @@ TypeScript 6.0 notes, discovered by this repo's fixture suite:
 ```
 bunx @inixiative/config check [dir] [--preset=base|node|react]
 bunx @inixiative/config sync  [dir] [--preset=...] [--force] [--no-install]
+bunx @inixiative/config standards [dir] [--check]
 bunx @inixiative/config scan  [root] [--lane=primitives|agentic]
 bunx @inixiative/config train [root] [--lane=primitives|agentic] [--push] [--dry-run] [--adopt-check-timeout=<seconds>]
 bunx @inixiative/config ports [project]
@@ -129,6 +130,23 @@ Per repo, in `scripts/ci/retired-terms/` (the same shape as template's doc-fresh
 
 - `allow.txt` for legitimate uses: `<term>` allows it everywhere, `<path>\t<term>` in one file, or under a directory when the path ends in `/` (a retired-names table, a history doc). Stale copy never goes here.
 - `baseline.txt` for uses that predate the rule, `<path>\t<term>\t<count>`: reported as one warning, not failed. A use beyond the count fails, and so does a count that dropped (lower or delete the line), so the baseline only shrinks. `terms --write-baseline` writes it when there is none, and later only to shrink it: it refuses to add a use.
+
+### standards
+
+`standards` materializes shared craft/methodology docs (`standards/*.md` → `docs/standards/`) and shared skills (`skills/<name>/` → `.claude/skills/inixiative-<name>/`) as plain, legible Markdown files (never symlinks) so every coding agent and harness discovers them natively without manual cross-repo backports. Both `/docs/standards/` and `/.claude/skills/inixiative-*/` are gitignored so committed repo-local skills (e.g. `integration-map`) stay tracked untouched, and `scripts.prepare` runs `inixiative-config standards` on `bun install` so every clone, worktree, and config bump refreshes them automatically and removes any stale/unused files or dropped `inixiative-*` skills.
+
+Every repo receives the universal docs (`GREAT_PROGRAMMER.md`, `ENGINEERING_DOCTRINE.md`, `CODE_STYLE.md`, `NAMING_VOCABULARY.md`) and universal skills (`cleanup-scan`, `review-adversarial`, `review-subtractor`, `review-dedupe`, `review-naming`, `review-plan`, `no-slop-writing`, `code-walkthrough`, `reflecting-without-flinching`, `labeling`, `worktrees`). Repos opt into extra skill profiles in `package.json`:
+
+```json
+"inixiative": {
+  "profiles": ["app", "agentic"]
+}
+```
+
+- `app`: adds `permissions-syntax-first`
+- `agentic`: adds `experiment`, `probe`
+
+Pass `--check` to verify drift without writing. Open `standards/` directly in Obsidian to read or edit from one place.
 
 ### sync
 
