@@ -55,7 +55,7 @@ The error runs in **both** directions:
 For work where the shape is not yet settled (design, taxonomy, modeling, naming, architecture):
 
 - Lead with questions and surface forks before closing the design space.
-- **Talk through semantic changes before coding.** For changes to what a primitive *means* (lenses, gates, layering, new options/modes), bring a one-paragraph spec, concrete test cases, and a history check before writing code. Mechanical work (ports, confirmed bugs, cleanups) executes autonomously.
+- **Talk through semantic/architectural changes with a concrete code specimen before coding.** For new data models, registries, API shapes, or changes to what a primitive *means* (lenses, gates, layering, new options/modes), bring short plain prose + a **20–40 line concrete code specimen** ("what is it going to look like?" — actual schema, object shape, or call site), concrete test cases, and a history check before writing code. Mechanical work (ports, confirmed bugs, cleanups) executes autonomously.
 - **History first:** check prior rulings, git log, and docs before redesigning something already settled.
 - **Small piece → validate → extend.** Validate one concrete sample before fanning out.
 

@@ -72,8 +72,8 @@ A great software designer starts from a clean conceptual model. If you cannot ex
 
 Code written turn-by-turn without a clear mechanism accretes scar tissue: a public route here, a Redis bridge token there, a hand-rolled middleware to patch a gap the first patch created. Each turn feels locally justified; the sum is 3× larger than the clean design.
 
-**Rejection test — Prose and Diagram Before Code:**
-Before editing code on any non-trivial change, write the flow in 10 lines of plain prose (and, for multi-step mechanisms, a simple diagram — Mermaid or a Blueprint scene built as a "but… so…" chain where every part earns its place). If a part cannot justify why the simpler version before it failed, cut that part before writing a line of code.
+**Rejection test — Prose, Code Specimen, and Diagram Before Code:**
+Before editing code on any non-trivial change (new model, schema, registry, API shape, or architectural refactor), show **what it is going to look like** first: a short ~10-line plain-prose flow plus a concrete **20–40 line code specimen** (the actual object literal, Prisma model, type signature, or call site — not just abstract prose) and, for multi-step mechanisms, a simple diagram (Mermaid or a Blueprint "but… so…" chain where every part earns its place). If a part cannot justify why the simpler version before it failed, cut that part before writing a line of code.
 
 ---
 

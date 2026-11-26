@@ -9,9 +9,9 @@ Review a proposed plan **before code is written** (`docs/standards/ENGINEERING_D
 
 ## Checklist
 
-1. **Clear "why" and plain-prose mechanism:**
-   - Can the plan state the purpose in one sentence and walk the end-to-end flow in ~10 lines of plain prose (plus a Mermaid or Blueprint "but… so…" diagram for multi-step mechanisms)?
-   - If the mechanism is vague or hand-waved, stop and clarify before coding.
+1. **Clear "why", plain prose, and a concrete code specimen:**
+   - Can the plan state the purpose in one sentence, walk the end-to-end flow in ~10 lines of plain prose, **and show a 20–40 line concrete code specimen** ("what is it going to look like?" — the actual data shape, schema, registry, or call site, plus a Mermaid or Blueprint "but… so…" diagram for multi-step mechanisms)?
+   - Abstract prose hides bloat that becomes obvious in 15 seconds on a 30-line code shape. If the specimen or mechanism is missing or hand-waved, stop and write it before coding.
 2. **History & prior rulings check:**
    - Does the plan contradict any standing decision, `CLAUDE.md` rule, repo doc, or prior git history? Name any conflict explicitly.
 3. **Primitive map & bridge analysis:**
