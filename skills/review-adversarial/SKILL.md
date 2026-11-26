@@ -18,7 +18,8 @@ Inspect the full diff (`git diff origin/<default-branch>...HEAD` plus untracked/
 3. **Data integrity & concurrency:** races across concurrent requests/jobs, check-then-act outside a transaction or row lock, non-atomic multi-step writes, soft-delete leaks (`deletedAt` missed), stored-value or schema changes missing a migration/port note.
 4. **Contracts & callers:** signature changes with stale callers/tests/docs, OpenAPI/SDK/type drift, swallowed errors (`catch` without rethrow or state action), hidden behavioral changes.
 5. **Parallel machinery & cutouts:** new code duplicating an existing primitive or bolting an invariant-bypassing cutout (`skip*`, special-case `if`) onto a primitive instead of fixing the general rule.
-6. **Tests & verification:** tests that mock away the real behavior, assertions that pass trivially, untested failure paths, or unrun checks.
+6. **Stale plumbing & superseded invariants:** after an architectural change or refactor round, surviving fallbacks, double-checks, lazy-setup helpers, dead branches, wrappers, routes, or tests left over from the previous design. Never ask the author to *harden* a superseded or unreachable path — flag it as a blocking deletion instead.
+7. **Tests & verification:** tests that mock away the real behavior, assertions that pass trivially, untested failure paths, or unrun checks.
 
 ## Rules
 

@@ -74,8 +74,8 @@ For work where the shape is not yet settled (design, taxonomy, modeling, naming,
 Non-trivial changes pass through independent review passes (see `.claude/skills/inixiative-review-*/`):
 
 1. **Plan & Bridge Review (`review-plan`)** — before coding on semantic/architectural changes.
-2. **Architectural Subtractor (`review-subtractor`)** — explicit 30–50% deletion mandate, run **before coding** (on the 10-line prose/diagram plan) and **before merge**.
+2. **Architectural Subtractor (`review-subtractor`)** — explicit 30–50% deletion mandate plus a mandatory stale-plumbing & surviving-parts reassessment, run **before coding** (on the 10-line prose/diagram plan), **before merge**, and **after every architectural or refactor round before pushing**.
 3. **Full-Package Duplication Audit (`review-dedupe`)** — whole package + lower libraries + sibling repos.
-4. **Adversarial Review (`review-adversarial`)** — correctness, security, tenant boundaries, races, data loss, contracts.
+4. **Adversarial Review (`review-adversarial`)** — correctness, security, tenant boundaries, races, data loss, contracts, and flagging superseded/stale fallback paths for deletion rather than hardening them.
 5. **Naming Review (`review-naming`)** — against [NAMING_VOCABULARY.md](NAMING_VOCABULARY.md) and library `VERBS.md`.
 6. **Cleanup Scan (`cleanup-scan`)** — full outgoing-diff sweep before push.
