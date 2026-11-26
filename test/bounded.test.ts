@@ -8,6 +8,7 @@ import {
   DEFAULT_BOUNDS,
   exitCodeOf,
   groupProcessesInTop,
+  holdCheckLock,
   runBounded,
   underLock,
 } from '../src/bounded';
@@ -202,7 +203,7 @@ describe('bounded', () => {
 
   test('a wait longer than waitSeconds gives up with exit 75 and names the lock', async () => {
     const lockPath = join(scratch(), 'check.lock');
-    const [file = '', ...args] = underLock(lockPath, 0, ['sleep', '5']);
+    const [file = '', ...args] = underLock(lockPath, 5, ['sleep', '5']);
     const holder = spawn(file, args, { stdio: 'ignore' });
     await until(() => !free(lockPath), 5_000);
     const outcome = await runBounded(['true'], {
@@ -237,6 +238,49 @@ describe('bounded', () => {
     await ended;
     expect(outcome).toEqual({ ended: 'exited', code: 0 });
     expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['a-start', 'a-end', 'b-start']);
+  }, 30_000);
+
+  test('a process holding the check lock keeps others out until it ends, and its own bounded runs at once', async () => {
+    const dir = scratch();
+    const lockPath = join(dir, 'check.lock');
+    const log = join(dir, 'order.log');
+    const script = `
+      import { appendFileSync } from 'node:fs';
+      import { holdCheckLock, runBounded } from ${JSON.stringify(join(packageRoot, 'src', 'bounded.ts'))};
+      const held = await holdCheckLock({ lockPath: ${JSON.stringify(lockPath)} });
+      appendFileSync(${JSON.stringify(log)}, 'held ' + held + '\\n');
+      const inner = await runBounded(['sh', '-c', 'echo inner >> ${log}'], {
+        lockPath: ${JSON.stringify(lockPath)},
+        lock: !process.env.INIXIATIVE_BOUNDED,
+        say: () => {},
+        memoryOf: () => [],
+      });
+      await new Promise((next) => setTimeout(next, 4000));
+      process.exit(inner.code);
+    `;
+    const holder = spawn('bun', ['-e', script], {
+      stdio: 'ignore',
+      env: { ...process.env, INIXIATIVE_BOUNDED: '' },
+    });
+    const ended = new Promise<number | null>((done) => holder.on('exit', done));
+    await until(() => existsSync(log) && readFileSync(log, 'utf8').includes('inner'), 10_000);
+    expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['held true', 'inner']);
+    expect(
+      await runBounded(['true'], { ...quiet, lockPath, bounds: { waitSeconds: 0.3 } }),
+    ).toEqual({ ended: 'lock wait', code: 75, path: lockPath });
+    expect(await ended).toBe(0);
+    expect(await until(() => free(lockPath), 5_000)).toBe(true);
+  }, 30_000);
+
+  test('holding the check lock gives up, false, when it stays held for the whole wait', async () => {
+    const lockPath = join(scratch(), 'check.lock');
+    const [file = '', ...args] = underLock(lockPath, 5, ['sleep', '5']);
+    const other = spawn(file, args, { stdio: 'ignore' });
+    await until(() => !free(lockPath), 5_000);
+    const before = process.env.INIXIATIVE_BOUNDED;
+    expect(await holdCheckLock({ lockPath, waitSeconds: 0.3, say: () => {} })).toBe(false);
+    expect(process.env.INIXIATIVE_BOUNDED).toBe(before);
+    other.kill();
   }, 30_000);
 
   test('a command that does not exist exits 127 and says why; one killed by a signal exits 128 + the signal', async () => {

@@ -16,7 +16,9 @@ import {
   checkLockPath,
   DEFAULT_BOUNDS,
   exitCodeOf,
+  holdCheckLock,
   INSIDE_BOUNDED,
+  LOCK_WAIT_EXIT_CODE,
   lockWrapperAbove,
   runBounded,
   TIME_LIMIT_EXIT_CODE,
@@ -303,6 +305,12 @@ if (command === 'train') {
       );
     }
     holdTrainLock(lock.release);
+    if (!process.env[INSIDE_BOUNDED] && !(await holdCheckLock())) {
+      console.error(
+        `✗ gave up waiting for the machine's check lock (${checkLockPath()}); the train needs it for every repo's check`,
+      );
+      process.exit(LOCK_WAIT_EXIT_CODE);
+    }
   }
 
   git(packageRoot, 'fetch', '--quiet');
