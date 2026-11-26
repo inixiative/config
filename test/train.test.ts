@@ -60,6 +60,11 @@ const agenticRoot = (): string => {
       dependencies: { '@inixiative/signet': `^${next('@inixiative/signet')}` },
     }),
   });
+  repo(join(root, 'integrations'), {
+    'package.json': pkg('@inixiative/integrations', {
+      dependencies: { '@inixiative/signet': `^${next('@inixiative/signet')}` },
+    }),
+  });
   repo(join(root, 'archive'), { 'package.json': pkg('@inixiative/archive') });
   repo(join(root, 'agent-session'), { 'package.json': pkg('@inixiative/agent-session') });
   repo(join(root, 'foundry'), {
@@ -140,9 +145,16 @@ const snapshot = (dirs: string[]) =>
 describe('train --dry-run', () => {
   test('plans the release without installing, writing, committing, publishing or pushing', () => {
     const root = agenticRoot();
-    const repos = ['signet', 'kcp', 'archive', 'agent-session', 'foundry', 'kingdom', 'oracle'].map(
-      (name) => join(root, name),
-    );
+    const repos = [
+      'signet',
+      'kcp',
+      'integrations',
+      'archive',
+      'agent-session',
+      'foundry',
+      'kingdom',
+      'oracle',
+    ].map((name) => join(root, name));
     const own = ['versions.json', 'package.json'].map((file) => join(packageRoot, file));
     const before = snapshot(repos);
     const ownBefore = own.map((file) => readFileSync(file, 'utf8'));
