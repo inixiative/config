@@ -40,6 +40,7 @@ export const STANDARD_DOCS = [
   'ENGINEERING_DOCTRINE.md',
   'GREAT_PROGRAMMER.md',
   'NAMING_VOCABULARY.md',
+  'SKILL_AUTHORING.md',
 ] as const;
 
 export const UNIVERSAL_SKILLS = [

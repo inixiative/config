@@ -1,6 +1,6 @@
 # Engineering Doctrine
 
-Shared engineering principles across all inixiative repositories. Pair with [GREAT_PROGRAMMER.md](GREAT_PROGRAMMER.md), [CODE_STYLE.md](CODE_STYLE.md), and [NAMING_VOCABULARY.md](NAMING_VOCABULARY.md).
+Shared engineering principles across all inixiative repositories. Pair with [GREAT_PROGRAMMER.md](GREAT_PROGRAMMER.md), [CODE_STYLE.md](CODE_STYLE.md), [NAMING_VOCABULARY.md](NAMING_VOCABULARY.md), and [SKILL_AUTHORING.md](SKILL_AUTHORING.md).
 
 ---
 
@@ -69,13 +69,16 @@ For work where the shape is not yet settled (design, taxonomy, modeling, naming,
 
 ---
 
-## 7. Review Team Before Anything Lands
+## 7. Review Team Before Anything Lands (`adversarials`)
 
-Non-trivial changes pass through independent review passes (see `.claude/skills/inixiative-review-*/`):
+When asked to run **`adversarials`** — and before reporting or merging any non-trivial change — run all **four independent review passes** (separate agents/mandates; see `.claude/skills/inixiative-review-*/`):
 
-1. **Plan & Bridge Review (`review-plan`)** — before coding on semantic/architectural changes.
-2. **Architectural Subtractor (`review-subtractor`)** — explicit 30–50% deletion mandate plus a mandatory stale-plumbing & surviving-parts reassessment, run **before coding** (on the 10-line prose/diagram plan), **before merge**, and **after every architectural or refactor round before pushing**.
-3. **Full-Package Duplication Audit (`review-dedupe`)** — whole package + lower libraries + sibling repos.
-4. **Adversarial Review (`review-adversarial`)** — correctness, security, tenant boundaries, races, data loss, contracts, and flagging superseded/stale fallback paths for deletion rather than hardening them.
-5. **Naming Review (`review-naming`)** — against [NAMING_VOCABULARY.md](NAMING_VOCABULARY.md) and library `VERBS.md`.
-6. **Cleanup Scan (`cleanup-scan`)** — full outgoing-diff sweep before push.
+1. **Base Correctness, Security & Style Consistency (`review-adversarial`)** — break correctness, security, tenant boundaries, races, data loss, contracts, style consistency (`CODE_STYLE.md`), and flag superseded/stale fallback paths for deletion rather than hardening them. Distinguish real defects from explicitly requested product behavior.
+2. **Architectural Subtractor & Stale Plumbing (`review-subtractor`)** — explicit 30–50% deletion mandate plus a mandatory stale-plumbing & surviving-parts reassessment, run **before coding** (on the 10-line prose/diagram plan), **before merge**, and **after every architectural or refactor round before pushing**.
+3. **Full-Package Duplication Audit (`review-dedupe`)** — whole package, lower-level libraries, and sibling repos.
+4. **Vocabulary & Naming Consistency (`review-naming`)** — against [NAMING_VOCABULARY.md](NAMING_VOCABULARY.md), library `VERBS.md`, retired terms, and **within-diff synonym drift** (one exact term per concept across code, tests, and docs).
+
+Paired workflow gates:
+- **Plan & Bridge Review (`review-plan`)** — before coding on semantic/architectural changes (including symmetrical premise falsification when a design assumption is questioned).
+- **Cleanup Scan (`cleanup-scan`)** — full outgoing-diff sweep before push.
+- **Keep attribution honest:** when relaying or posting user feedback, state the user's points accurately — never substitute an agent's own review findings for the user's words.

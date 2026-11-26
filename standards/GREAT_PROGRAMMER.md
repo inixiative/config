@@ -29,7 +29,7 @@ Platitudes don't change code. Every principle below is paired with a **falsifiab
 Adding a layer to solve a local problem feels safe and thorough. It is almost always a failure to see the right place in the existing system. Treat every new abstraction, table, route, store, middleware, and config option as guilty until proven necessary.
 
 **Rejection test — The 30–50% Subtraction Pass:**
-Before writing code (from your 10-line prose plan) and again before merge, assume your design has 30–50% too much surface area. Ask of every new file, route, column, Redis key, flag, and middleware: *which existing primitive (auth, ReBAC, JWT, rate limit, transitions, field encryption, hooks, scoped DB) already owns this job or can absorb it cleanly?* If you cannot show a failed attempt to express it on the existing primitive, delete the new piece and fold it in.
+Before writing code (from your 10-line prose plan) and again before merge, assume your design has 30–50% too much surface area. Ask of every new file, route, column, store, flag, and layer: *which existing primitive in this repo or its core libraries already owns this job or can absorb it cleanly?* If you cannot show a failed attempt to express it on the existing primitive, delete the new piece and fold it in.
 
 ---
 
@@ -59,7 +59,7 @@ Open any file you wrote. Can another engineer understand every branch, every err
 Two concepts that change for different reasons, have different lifecycles, or belong to different owners do not belong in one table, one flag, or one function — even if merging them saves ten lines today. Conversely, one concept split across two parallel paths (two auth checks, two rate limiters, two JWT signers) guarantees they will drift apart and fail silently.
 
 **Rejection test — One Concept, One Place:**
-Trace a single rule or invariant across your change (for example, "must have verified 2FA" or "row is not soft-deleted"). Does it live in **one** structural place (the permission schema, the middleware, the primitive), or is it re-checked in three handlers? One concept in two places is a bug waiting to happen.
+Trace a single rule or invariant across your change. Does it live in **one** structural place (the schema, the boundary, or the owning primitive), or is it re-checked or re-implemented in multiple callers? One concept in two places is a bug waiting to happen.
 
 ---
 
@@ -102,7 +102,7 @@ Does your change add a boolean flag, bypass option, or one-off carve-out to an e
 
 The best diff often has a negative line count. After an iterative build, review cycle, or architectural change, step back and inspect the *whole* touched subsystem from scratch as if you were building it fresh with everything you now know — never defend a file, route, fallback, or helper just because it already passed tests on an earlier turn.
 
-When an architectural change introduces a new invariant or replaces an old mechanism (for example, an eager DB hook replacing lazy setup, a schema relation replacing manual joins, or a primitive absorbing a local layer), **superseded plumbing does not delete itself.** Agents wire up the new path and leave old fallbacks, guards, helpers, branches, wrappers, and tests standing next to it, forcing the human reviewer to spend hours reading dead layers to spot what no longer needs to exist.
+When an architectural change introduces a new invariant or replaces an earlier mechanism, **superseded plumbing does not delete itself.** Agents wire up the new path and leave old fallbacks, guards, helpers, branches, wrappers, and tests standing next to it, forcing the human reviewer to spend hours reading dead layers to spot what no longer needs to exist.
 
 **Rejection test — Fresh-Eyes Rebuild & Superseded-Plumbing Audit:**
 1. **Fresh-eyes rebuild:** Ask: *knowing everything I know now, if I built this from scratch in one pass, what would I leave out?*

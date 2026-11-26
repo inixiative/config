@@ -135,7 +135,7 @@ Per repo, in `scripts/ci/retired-terms/` (the same shape as template's doc-fresh
 
 `standards` materializes shared craft/methodology docs (`standards/*.md` → `docs/standards/`) and shared skills (`skills/<name>/` → `.claude/skills/inixiative-<name>/`) as plain, legible Markdown files (never symlinks) so every coding agent and harness discovers them natively without manual cross-repo backports. Both `/docs/standards/` and `/.claude/skills/inixiative-*/` are gitignored so committed repo-local skills (e.g. `integration-map`) stay tracked untouched, and `scripts.prepare` runs `inixiative-config standards` on `bun install` so every clone, worktree, and config bump refreshes them automatically and removes any stale/unused files or dropped `inixiative-*` skills.
 
-Every repo receives the universal docs (`GREAT_PROGRAMMER.md`, `ENGINEERING_DOCTRINE.md`, `CODE_STYLE.md`, `NAMING_VOCABULARY.md`) and universal skills (`cleanup-scan`, `review-adversarial`, `review-subtractor`, `review-dedupe`, `review-naming`, `review-plan`, `no-slop-writing`, `code-walkthrough`, `reflecting-without-flinching`, `labeling`, `worktrees`). Repos opt into extra skill profiles in `package.json`:
+Every repo receives the universal docs (`GREAT_PROGRAMMER.md`, `ENGINEERING_DOCTRINE.md`, `CODE_STYLE.md`, `NAMING_VOCABULARY.md`, `SKILL_AUTHORING.md`) and universal skills (`cleanup-scan`, `review-adversarial`, `review-subtractor`, `review-dedupe`, `review-naming`, `review-plan`, `no-slop-writing`, `code-walkthrough`, `reflecting-without-flinching`, `labeling`, `worktrees`). Repos opt into extra skill profiles in `package.json`:
 
 ```json
 "inixiative": {
