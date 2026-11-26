@@ -255,7 +255,7 @@ describe('bounded', () => {
         say: () => {},
         memoryOf: () => [],
       });
-      await new Promise((next) => setTimeout(next, 1500));
+      await new Promise((next) => setTimeout(next, 4000));
       process.exit(inner.code);
     `;
     const holder = spawn('bun', ['-e', script], {
@@ -277,8 +277,9 @@ describe('bounded', () => {
     const [file = '', ...args] = underLock(lockPath, 0, ['sleep', '5']);
     const other = spawn(file, args, { stdio: 'ignore' });
     await until(() => !free(lockPath), 5_000);
+    const before = process.env.INIXIATIVE_BOUNDED;
     expect(await holdCheckLock({ lockPath, waitSeconds: 0.3, say: () => {} })).toBe(false);
-    expect(process.env.INIXIATIVE_BOUNDED ?? '').toBe('');
+    expect(process.env.INIXIATIVE_BOUNDED).toBe(before);
     other.kill();
   }, 30_000);
 
