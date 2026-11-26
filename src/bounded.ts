@@ -32,7 +32,7 @@ export const TIME_LIMIT_EXIT_CODE = 124;
 /** The machine's one slot for full checks: a flock(2) file, free again when its holder dies. */
 export const checkLockPath = (): string => join(homedir(), '.foundry', 'check.lock');
 /** `lockf`'s exit code (EX_TEMPFAIL) when the lock stayed held for the whole wait. */
-const LOCK_WAIT_EXIT_CODE = 75;
+export const LOCK_WAIT_EXIT_CODE = 75;
 
 /** The command that runs `command` holding the flock on `path`, waiting at most `seconds` for it. */
 export const underLock = (path: string, seconds: number, command: readonly string[]): string[] =>
@@ -261,6 +261,46 @@ export const runBounded = async (
     if (signalled !== null) process.exit(signalled);
     for (const [signal, handler] of stopOnSignal) process.off(signal, handler);
   }
+};
+
+/** Run once the lock is held: says so on descriptor 4, then holds until descriptor 3 closes. */
+const HOLDING_UNTIL_CLOSED = 'echo held >&4; exec 4>&-; read _ <&3';
+
+/**
+ * Hold the machine's check lock for as long as this process lives, so each `bounded` it starts
+ * runs without waiting again: a train waits once, not once per repo. The holder reads descriptor
+ * 3, which only this process holds open, so the lock is free the moment the process ends. False
+ * when the lock stayed held for the whole wait.
+ */
+export const holdCheckLock = async (
+  options: { lockPath?: string; waitSeconds?: number; say?: (line: string) => void } = {},
+): Promise<boolean> => {
+  const path = options.lockPath ?? checkLockPath();
+  const say = options.say ?? ((line: string) => console.error(line));
+  mkdirSync(dirname(path), { recursive: true });
+  const [file = '', ...args] = underLock(
+    path,
+    Math.ceil(options.waitSeconds ?? DEFAULT_BOUNDS.waitSeconds),
+    ['sh', '-c', HOLDING_UNTIL_CLOSED],
+  );
+  const holder = spawn(file, args, { stdio: ['ignore', 'inherit', 'inherit', 'pipe', 'pipe'] });
+  const waiting = setTimeout(
+    () => say(`train: waiting for the machine's check lock (${path})`),
+    5_000,
+  );
+  const held = await new Promise<boolean>((done) => {
+    holder.stdio[4]?.once('data', () => done(true));
+    holder.on('error', () => done(false));
+    holder.on('exit', () => done(false));
+  });
+  clearTimeout(waiting);
+  if (!held) return false;
+  process.on('exit', () => holder.kill());
+  holder.unref();
+  for (const pipe of [holder.stdio[3], holder.stdio[4]])
+    (pipe as { unref?: () => void })?.unref?.();
+  process.env[INSIDE_BOUNDED] = String(process.pid);
+  return true;
 };
 
 /** The line a check that did not end by itself finishes on. */
