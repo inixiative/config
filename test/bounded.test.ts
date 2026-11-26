@@ -203,7 +203,7 @@ describe('bounded', () => {
 
   test('a wait longer than waitSeconds gives up with exit 75 and names the lock', async () => {
     const lockPath = join(scratch(), 'check.lock');
-    const [file = '', ...args] = underLock(lockPath, 0, ['sleep', '5']);
+    const [file = '', ...args] = underLock(lockPath, 5, ['sleep', '5']);
     const holder = spawn(file, args, { stdio: 'ignore' });
     await until(() => !free(lockPath), 5_000);
     const outcome = await runBounded(['true'], {
@@ -274,7 +274,7 @@ describe('bounded', () => {
 
   test('holding the check lock gives up, false, when it stays held for the whole wait', async () => {
     const lockPath = join(scratch(), 'check.lock');
-    const [file = '', ...args] = underLock(lockPath, 0, ['sleep', '5']);
+    const [file = '', ...args] = underLock(lockPath, 5, ['sleep', '5']);
     const other = spawn(file, args, { stdio: 'ignore' });
     await until(() => !free(lockPath), 5_000);
     const before = process.env.INIXIATIVE_BOUNDED;
