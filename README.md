@@ -211,6 +211,8 @@ jobs:
 
 ## Release flow
 
+One agent runs every train: the release conductor, a Foundry schedule on this repo. Its charter is [`docs/RELEASE-CONDUCTOR.md`](docs/RELEASE-CONDUCTOR.md). Every other session stops at "merged, row written" in `~/code/inixiative/RELEASE-QUEUE.md` and never runs `train` or merges a PR here.
+
 Two lanes, each publishing in dependency order, with config last:
 
 - **primitives:** for example field-map → json-rules → permissions → transitions → rules-builder, plus prisma-map (retiring into field-map), atlas and gloss. Consumers: template, kingdom.
