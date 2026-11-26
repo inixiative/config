@@ -19,6 +19,10 @@ It never runs `train` and never merges a config PR. Why: the train pushes config
 1. **Is there work?** Read the queue, `gh pr list` on config, `versions.json` and `train --dry-run`. Nothing queued, nothing ahead of npm, no adoption branch waiting: end the run in one line.
 2. **Merge queued config PRs.** Green ones only: merge `main` in, run `bun run check`, merge. One that is red or conflicts goes back to its owner (below).
 3. **Run the agentic train.** `bun src/cli.ts train ~/code/inixiative --lane=agentic --dry-run`, read the plan, then the same with `--push` in place of `--dry-run`. The agentic lane needs no ask (R-2026-11-20-02).
+   Then read its summary for what it could not do, and finish each:
+   - **A rejected push** (a repo's `main` moved while the train ran). The train stops pushing at the first one, so every repo after it is unpushed too. In each repo ahead of origin: push; where it is rejected, rebase the train's commits onto origin, run the full check, push.
+   - **A skipped checkout** (dirty or diverged). Untracked files that belong to no session's work, such as tool logs, are a queue row to get them ignored; anything else is its owner's, so message them.
+   - **A failed install.** In a template-based repo run `scripts/setup/sync-env.sh` first: a missing env key fails `postinstall`.
 4. **Finish adoptions.** For each incomplete adoption branch the summary lists, make the mechanical fix, run that repo's full `bun run check`, merge once green, then run the train again so it blesses.
 5. **Primitives rows.** Run `train --lane=primitives --dry-run` only. Put its plan on the row, set the row to `waiting on Aron`, and ask with `set_status needs-you`. Run the real lane only after he says so in that thread.
 6. **Update the queue.** Set each row's state. Delete a row once its version is blessed and every repo that depends on it is on it.
