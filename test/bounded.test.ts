@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   boundedVerdict,
+  checkSlotPaths,
   DEFAULT_BOUNDS,
+  defaultCheckSlots,
   exitCodeOf,
   groupProcessesInTop,
   holdCheckLock,
@@ -33,7 +35,13 @@ const free = (path: string) => {
 };
 const marker = (name: string) => `bounded-${name}-${process.pid}-${Date.now()}`;
 const cli = join(packageRoot, 'src', 'cli.ts');
-const cliEnv = (home: string) => ({ ...process.env, HOME: home, CI: '', INIXIATIVE_BOUNDED: '' });
+const cliEnv = (home: string, slots = '1') => ({
+  ...process.env,
+  HOME: home,
+  CI: '',
+  INIXIATIVE_BOUNDED: '',
+  INIXIATIVE_CHECK_SLOTS: slots,
+});
 
 describe('bounded', () => {
   test('a command that ends inside its bounds returns its own exit code and frees the lock', async () => {
@@ -364,4 +372,61 @@ describe('bounded', () => {
     ).toBe('✗ bounded: stopped at the 40 min time limit (peak 1.0 GB, most in unknown)');
     expect(boundedVerdict({ ended: 'exited', code: 0 }, DEFAULT_BOUNDS)).toBeNull();
   });
+
+  test('multi-slot pool runs N checks concurrently, queues the (N+1)th until any slot frees, and sizes defaults by CPU/RAM', async () => {
+    expect(defaultCheckSlots(10, 64 * 2 ** 30, '')).toBe(3);
+    expect(defaultCheckSlots(8, 16 * 2 ** 30, '')).toBe(2);
+    expect(defaultCheckSlots(2, 8 * 2 ** 30, '')).toBe(1);
+    expect(defaultCheckSlots(2, 8 * 2 ** 30, '4')).toBe(4);
+    expect(defaultCheckSlots(10, 64 * 2 ** 30, '99')).toBe(8);
+
+    const dir = scratch();
+    const lockPath = join(dir, 'check.lock');
+    expect(checkSlotPaths(lockPath, 3)).toEqual([
+      join(dir, 'check.lock'),
+      join(dir, 'check-slot-1.lock'),
+      join(dir, 'check-slot-2.lock'),
+    ]);
+
+    const log = join(dir, 'pool.log');
+    const a = runBounded(['sh', '-c', `echo a-start >> ${log}; sleep 0.8; echo a-end >> ${log}`], {
+      ...quiet,
+      lockPath,
+      slots: 2,
+    });
+    const b = runBounded(['sh', '-c', `echo b-start >> ${log}; sleep 0.8; echo b-end >> ${log}`], {
+      ...quiet,
+      lockPath,
+      slots: 2,
+    });
+    await until(
+      () =>
+        existsSync(log) &&
+        readFileSync(log, 'utf8').includes('a-start') &&
+        readFileSync(log, 'utf8').includes('b-start'),
+      5_000,
+    );
+    // Both slots are active simultaneously before either finishes.
+    const midLines = readFileSync(log, 'utf8').trim().split('\n');
+    expect(midLines).toContain('a-start');
+    expect(midLines).toContain('b-start');
+    expect(midLines).not.toContain('a-end');
+    expect(midLines).not.toContain('b-end');
+
+    // A third check waits for either slot to free, then runs cleanly.
+    const c = runBounded(['sh', '-c', `echo c-start >> ${log}`], {
+      ...quiet,
+      lockPath,
+      slots: 2,
+      bounds: { waitSeconds: 5 },
+    });
+    expect((await a).code).toBe(0);
+    expect((await b).code).toBe(0);
+    expect((await c).code).toBe(0);
+    const finalLines = readFileSync(log, 'utf8').trim().split('\n');
+    expect(finalLines.indexOf('c-start')).toBeGreaterThan(
+      Math.min(finalLines.indexOf('a-end'), finalLines.indexOf('b-end')),
+    );
+    for (const slot of checkSlotPaths(lockPath, 2)) expect(free(slot)).toBe(true);
+  }, 30_000);
 });
