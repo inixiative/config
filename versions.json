@@ -53,6 +53,14 @@
       ]
     }
   },
+  "holds": {
+    "@inixiative/integrations": {
+      "below": "0.3.0",
+      "reason": "0.3.0 removes the google and github provider keys; Kingdom's family integrations and template's Provider enum still use them",
+      "until": "the FEAT-034 build in template and Kingdom (after template #338)",
+      "owner": "inixiative-fb"
+    }
+  },
   "candidates": {
     "@inixiative/atlas": "0.5.1",
     "@inixiative/json-rules": "4.7.0",
@@ -60,7 +68,6 @@
     "@inixiative/field-map": "0.1.2",
     "@inixiative/archive": "0.35.2",
     "@inixiative/permissions": "0.30.0",
-    "@inixiative/signet": "0.29.0",
-    "@inixiative/integrations": "0.3.0"
+    "@inixiative/signet": "0.29.0"
   }
 }
