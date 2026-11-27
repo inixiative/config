@@ -13,7 +13,7 @@
     "@types/bun"
   ],
   "ecosystem": {
-    "@inixiative/config": "0.5.255",
+    "@inixiative/config": "0.5.256",
     "@inixiative/field-map": "0.1.1",
     "@inixiative/json-rules": "3.16.0",
     "@inixiative/permissions": "0.25.0",
@@ -24,10 +24,10 @@
     "@inixiative/gloss": "0.1.1"
   },
   "agentic": {
-    "@inixiative/signet": "0.25.0",
+    "@inixiative/signet": "0.29.0",
     "@inixiative/integrations": "0.2.1",
     "@inixiative/kcp": "0.2.3",
-    "@inixiative/archive": "0.34.0",
+    "@inixiative/archive": "0.35.2",
     "@inixiative/agent-session": "0.12.0",
     "@inixiative/foundry-core": "0.5.13",
     "@inixiative/foundry": "0.5.12",
@@ -66,8 +66,6 @@
     "@inixiative/json-rules": "4.7.0",
     "@inixiative/agent-session": "0.23.0",
     "@inixiative/field-map": "0.1.2",
-    "@inixiative/archive": "0.35.2",
-    "@inixiative/permissions": "0.30.0",
-    "@inixiative/signet": "0.29.0"
+    "@inixiative/permissions": "0.30.0"
   }
 }
