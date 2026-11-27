@@ -13,12 +13,12 @@
     "@types/bun"
   ],
   "ecosystem": {
-    "@inixiative/config": "0.5.253",
+    "@inixiative/config": "0.5.254",
     "@inixiative/field-map": "0.1.1",
     "@inixiative/json-rules": "3.16.0",
     "@inixiative/permissions": "0.25.0",
-    "@inixiative/transitions": "0.9.0",
-    "@inixiative/rules-builder": "0.33.0",
+    "@inixiative/transitions": "0.10.0",
+    "@inixiative/rules-builder": "0.35.0",
     "@inixiative/prisma-map": "0.4.1",
     "@inixiative/atlas": "0.4.1",
     "@inixiative/gloss": "0.1.1"
@@ -59,9 +59,7 @@
     "@inixiative/agent-session": "0.22.3",
     "@inixiative/field-map": "0.1.2",
     "@inixiative/archive": "0.35.2",
-    "@inixiative/permissions": "0.29.0",
-    "@inixiative/signet": "0.29.0",
-    "@inixiative/rules-builder": "0.35.0",
-    "@inixiative/transitions": "0.10.0"
+    "@inixiative/permissions": "0.30.0",
+    "@inixiative/signet": "0.29.0"
   }
 }
