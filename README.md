@@ -64,7 +64,7 @@ One version of `@inixiative/config` names one coherent state of the inixiative p
 }
 ```
 
-A lane is a release cascade with its own blessed set. `primitives` (field-map, json-rules, permissions, transitions, rules-builder, prisma-map, atlas, gloss) ships first; `agentic` (signet → archive, signet → kcp, signet → integrations, agent-session → foundry-core → foundry → foundry-acp) builds on the primitives' blessed set and never the reverse. `check` holds every repo to the union of all lanes, so a repo that mixes both answers to both.
+A lane is a release cascade with its own blessed set. `primitives` (field-map, json-rules, permissions, transitions, rules-builder, prisma-map, atlas, gloss) ships first; `agentic` (signet → archive, signet → kcp, signet → integrations, infra, agent-session → foundry-core → foundry → foundry-acp) builds on the primitives' blessed set and never the reverse. `check` holds every repo to the union of all lanes, so a repo that mixes both answers to both.
 
 TypeScript 6.0 notes, discovered by this repo's fixture suite:
 
@@ -216,6 +216,6 @@ One agent runs every train: the release conductor, a Foundry schedule on this re
 Two lanes, each publishing in dependency order, with config last:
 
 - **primitives:** for example field-map → json-rules → permissions → transitions → rules-builder, plus prisma-map (retiring into field-map), atlas and gloss. Consumers: template, kingdom.
-- **agentic:** signet, kcp (the Kingdom CLI proxy, on signet), integrations (the public provider catalog, on signet), archive and agent-session, then foundry-core → foundry → foundry-acp (foundry depends on archive), built on the primitives' blessed set. foundry-core, foundry and foundry-acp publish from the foundry monorepo's `packages/core`, `packages/foundry` and `packages/acp`. Consumers: oracle (a private leaf), kingdom, template (for integrations).
+- **agentic:** signet, kcp (the Kingdom CLI proxy, on signet), integrations (the public provider catalog, on signet), infra (stateless hosting drivers, no inixiative dependencies), archive and agent-session, then foundry-core → foundry → foundry-acp (foundry depends on archive), built on the primitives' blessed set. foundry-core, foundry and foundry-acp publish from the foundry monorepo's `packages/core`, `packages/foundry` and `packages/acp`. Consumers: oracle (a private leaf), kingdom, template (for integrations; its `init` moves onto infra in INFRA-050).
 
 A release is `train` (or `train --lane=agentic` to leave the primitives alone): bump the package's version on its default branch, then run the train. `train` automates the whole walk, this package and the consumer bumps included. Downstream repos pick up toolchain changes via `sync`.

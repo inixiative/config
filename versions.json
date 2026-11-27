@@ -26,6 +26,7 @@
   "agentic": {
     "@inixiative/signet": "0.29.0",
     "@inixiative/integrations": "0.2.1",
+    "@inixiative/infra": "0.1.1",
     "@inixiative/kcp": "0.2.3",
     "@inixiative/archive": "0.35.2",
     "@inixiative/agent-session": "0.12.0",

@@ -65,6 +65,7 @@ const agenticRoot = (): string => {
       dependencies: { '@inixiative/signet': `^${next('@inixiative/signet')}` },
     }),
   });
+  repo(join(root, 'infra'), { 'package.json': pkg('@inixiative/infra') });
   repo(join(root, 'archive'), { 'package.json': pkg('@inixiative/archive') });
   repo(join(root, 'agent-session'), { 'package.json': pkg('@inixiative/agent-session') });
   repo(join(root, 'foundry'), {
@@ -149,6 +150,7 @@ describe('train --dry-run', () => {
       'signet',
       'kcp',
       'integrations',
+      'infra',
       'archive',
       'agent-session',
       'foundry',
