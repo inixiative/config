@@ -1,7 +1,7 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
-import { constants, homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { constants, cpus, homedir, totalmem } from 'node:os';
+import { basename, dirname, join } from 'node:path';
 
 export type Bounds = {
   /** Wall-clock seconds the command may run once it holds the lock. */
@@ -29,15 +29,56 @@ export const INSIDE_BOUNDED = 'INIXIATIVE_BOUNDED';
 /** `bounded`'s exit code when the time limit stopped the command, as `timeout(1)`'s. */
 export const TIME_LIMIT_EXIT_CODE = 124;
 
-/** The machine's one slot for full checks: a flock(2) file, free again when its holder dies. */
+/** Base lock path for full checks (slot 0): a flock(2) file, free again when its holder dies. */
 export const checkLockPath = (): string => join(homedir(), '.foundry', 'check.lock');
 /** `lockf`'s exit code (EX_TEMPFAIL) when the lock stayed held for the whole wait. */
 export const LOCK_WAIT_EXIT_CODE = 75;
 
+const MAX_CHECK_SLOTS = 8;
+
+/**
+ * How many concurrent full checks this machine allows.
+ * Overridable via `INIXIATIVE_CHECK_SLOTS` (1..8). Defaults to 3 on >=32 GB / >=8-core hosts,
+ * 2 on >=16 GB / >=4-core hosts, and 1 on smaller machines.
+ */
+export const defaultCheckSlots = (
+  cpuCount = cpus().length,
+  totalMemoryBytes = totalmem(),
+  envValue = process.env.INIXIATIVE_CHECK_SLOTS,
+): number => {
+  if (envValue !== undefined && envValue.trim() !== '') {
+    const parsed = Number(envValue.trim());
+    if (Number.isInteger(parsed) && parsed >= 1) return Math.min(parsed, MAX_CHECK_SLOTS);
+  }
+  if (cpuCount >= 8 && totalMemoryBytes >= 32 * 2 ** 30) return 3;
+  if (cpuCount >= 4 && totalMemoryBytes >= 16 * 2 ** 30) return 2;
+  return 1;
+};
+
+/**
+ * The lock file paths for a pool of `slots` concurrent checks.
+ * Slot 0 stays at `basePath` (`~/.foundry/check.lock`) so older single-slot callers still share slot 0.
+ */
+export const checkSlotPaths = (
+  basePath = checkLockPath(),
+  slots = defaultCheckSlots(),
+): string[] => {
+  const count = Math.max(1, Math.min(Math.floor(slots), MAX_CHECK_SLOTS));
+  const dir = dirname(basePath);
+  const name = basename(basePath);
+  const paths = [basePath];
+  for (let i = 1; i < count; i++) {
+    paths.push(name === 'check.lock' ? join(dir, `check-slot-${i}.lock`) : `${basePath}.${i}`);
+  }
+  return paths;
+};
+
 /** The command that runs `command` holding the flock on `path`, waiting at most `seconds` for it. */
 export const underLock = (path: string, seconds: number, command: readonly string[]): string[] =>
   process.platform === 'linux'
-    ? ['flock', '-o', '-E', String(LOCK_WAIT_EXIT_CODE), '-w', String(seconds), path, ...command]
+    ? seconds <= 0
+      ? ['flock', '-n', '-o', '-E', String(LOCK_WAIT_EXIT_CODE), path, ...command]
+      : ['flock', '-o', '-E', String(LOCK_WAIT_EXIT_CODE), '-w', String(seconds), path, ...command]
     : ['lockf', '-k', '-s', '-t', String(seconds), path, ...command];
 
 /**
@@ -144,9 +185,30 @@ const WITH_WATCHER = '(exec 4>&-; read _ <&3; kill -KILL 0) >/dev/null 2>&1 & ex
  */
 const HOLDING_THE_LOCK = 'echo held >&4; exec 4>&- 3<&-; "$@"; exit $?';
 
+type SpawnedAttempt = {
+  child: ChildProcess;
+  exited: Promise<{ code: number; reason?: string }>;
+  held: Promise<true>;
+};
+
+const spawnBoundedAttempt = (args: readonly string[], cwd: string): SpawnedAttempt => {
+  const child = spawn('sh', ['-c', WITH_WATCHER, 'sh', ...args], {
+    cwd,
+    stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'],
+    detached: true,
+    env: { ...process.env, [INSIDE_BOUNDED]: String(process.pid) },
+  });
+  const exited = new Promise<{ code: number; reason?: string }>((done) => {
+    child.on('error', (error) => done({ code: 127, reason: error.message }));
+    child.on('exit', (code, signal) => done({ code: exitCodeOf(code, signal) }));
+  });
+  const held = new Promise<true>((done) => child.stdio[4]?.once('data', () => done(true)));
+  return { child, exited, held };
+};
+
 /**
- * Run `command` as the machine's one full check: wait for the lock, then stop the command's
- * whole process group when it outlives `seconds` or holds more than `memoryBytes`, when
+ * Run `command` inside one of the machine's check slots: wait for a free slot, then stop the
+ * command's whole process group when it outlives `seconds` or holds more than `memoryBytes`, when
  * `bounded` itself is stopped, and once the command has ended (nothing it started stays behind).
  * Limits are read every `sampleMs`. Exit codes follow `timeout(1)`: 124 for the time limit, 137
  * for the memory ceiling, 75 for the lock wait.
@@ -156,6 +218,7 @@ export const runBounded = async (
   options: {
     bounds?: Partial<Bounds>;
     lockPath?: string;
+    slots?: number;
     cwd?: string;
     sampleMs?: number;
     say?: (line: string) => void;
@@ -167,37 +230,20 @@ export const runBounded = async (
   if (command.length === 0) throw new Error('bounded: no command given');
   const bounds = { ...DEFAULT_BOUNDS, ...options.bounds };
   const say = options.say ?? ((line: string) => console.error(line));
-  const path = options.lockPath ?? checkLockPath();
+  const basePath = options.lockPath ?? checkLockPath();
+  // Explicit lockPath defaults to 1 slot unless slots is explicitly given, preserving single-lock tests.
+  const slots = options.slots ?? (options.lockPath ? 1 : defaultCheckSlots());
+  const slotPaths = checkSlotPaths(basePath, slots);
+  const cwd = options.cwd ?? process.cwd();
   const sampleMs = options.sampleMs ?? 10_000;
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(basePath), { recursive: true });
   const holding = ['sh', '-c', HOLDING_THE_LOCK, 'sh', ...command];
-  const child = spawn(
-    'sh',
-    [
-      '-c',
-      WITH_WATCHER,
-      'sh',
-      ...(options.lock === false
-        ? holding
-        : underLock(path, Math.ceil(bounds.waitSeconds), holding)),
-    ],
-    {
-      cwd: options.cwd ?? process.cwd(),
-      stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'],
-      detached: true,
-      env: { ...process.env, [INSIDE_BOUNDED]: String(process.pid) },
-    },
-  );
-  const pgid = child.pid;
-  const exited = new Promise<{ code: number; reason?: string }>((done) => {
-    child.on('error', (error) => done({ code: 127, reason: error.message }));
-    child.on('exit', (code, signal) => done({ code: exitCodeOf(code, signal) }));
-  });
-  const held = new Promise<true>((done) => child.stdio[4]?.once('data', () => done(true)));
-  const stop = async () => {
-    if (pgid) await stopGroup(pgid);
-  };
+
+  let activePgid: number | undefined;
   let signalled: number | null = null;
+  const stop = async () => {
+    if (activePgid) await stopGroup(activePgid);
+  };
   const stopOnSignal = (
     [
       ['SIGINT', 130],
@@ -212,31 +258,84 @@ export const runBounded = async (
     process.on(signal, handler);
     return [signal, handler] as const;
   });
+
   let peakBytes = 0;
   let heaviest = '';
   try {
-    const waiting = setTimeout(
-      () => say(`bounded: waiting for the machine's check lock (${path})`),
-      Math.min(5_000, sampleMs),
-    );
-    const first = await Promise.race([held, exited]);
-    clearTimeout(waiting);
-    if (first !== true) {
-      if (first.reason !== undefined)
-        return { ended: 'not started', code: 127, reason: first.reason };
-      // A command that ended at once may have its exit seen before its word that the lock was held.
-      const ran = await Promise.race([held, sleep(200).then(() => false)]);
-      return !ran && first.code === LOCK_WAIT_EXIT_CODE
-        ? { ended: 'lock wait', code: LOCK_WAIT_EXIT_CODE, path }
-        : { ended: 'exited', code: first.code };
+    let attempt: SpawnedAttempt | null = null;
+
+    if (options.lock === false || slotPaths.length === 1) {
+      const args =
+        options.lock === false
+          ? holding
+          : underLock(basePath, Math.ceil(bounds.waitSeconds), holding);
+      attempt = spawnBoundedAttempt(args, cwd);
+      activePgid = attempt.child.pid;
+      const waiting = setTimeout(
+        () => say(`bounded: waiting for the machine's check lock (${basePath})`),
+        Math.min(5_000, sampleMs),
+      );
+      const first = await Promise.race([attempt.held, attempt.exited]);
+      clearTimeout(waiting);
+      if (first !== true) {
+        if (first.reason !== undefined)
+          return { ended: 'not started', code: 127, reason: first.reason };
+        // A command that ended at once may have its exit seen before its word that the lock was held.
+        const ran = await Promise.race([attempt.held, sleep(200).then(() => false)]);
+        return !ran && first.code === LOCK_WAIT_EXIT_CODE
+          ? { ended: 'lock wait', code: LOCK_WAIT_EXIT_CODE, path: basePath }
+          : { ended: 'exited', code: first.code };
+      }
+    } else {
+      const waitStart = Date.now();
+      const waitDeadline = waitStart + bounds.waitSeconds * 1000;
+      const announceMs = Math.min(5_000, sampleMs);
+      let announced = false;
+      for (;;) {
+        let acquired: SpawnedAttempt | null = null;
+        for (const slotPath of slotPaths) {
+          if (signalled !== null) return { ended: 'exited', code: signalled };
+          const candidate = spawnBoundedAttempt(underLock(slotPath, 0, holding), cwd);
+          activePgid = candidate.child.pid;
+          const first = await Promise.race([candidate.held, candidate.exited]);
+          if (first === true) {
+            acquired = candidate;
+            break;
+          }
+          if (first.reason !== undefined)
+            return { ended: 'not started', code: 127, reason: first.reason };
+          const ran = await Promise.race([candidate.held, sleep(50).then(() => false)]);
+          if (ran || first.code !== LOCK_WAIT_EXIT_CODE) {
+            return { ended: 'exited', code: first.code };
+          }
+          await stop();
+          activePgid = undefined;
+        }
+        if (acquired) {
+          attempt = acquired;
+          break;
+        }
+        const remainingMs = waitDeadline - Date.now();
+        if (remainingMs <= 0) {
+          return { ended: 'lock wait', code: LOCK_WAIT_EXIT_CODE, path: basePath };
+        }
+        if (!announced && Date.now() - waitStart >= announceMs) {
+          announced = true;
+          say(
+            `bounded: waiting for a free check slot (${slotPaths.length} busy under ${dirname(basePath)})`,
+          );
+        }
+        await sleep(Math.min(250, remainingMs));
+      }
     }
+
     const deadline = Date.now() + bounds.seconds * 1000;
     for (;;) {
-      const end = await Promise.race([exited, sleep(sampleMs).then(() => null)]);
+      const end = await Promise.race([attempt.exited, sleep(sampleMs).then(() => null)]);
       if (end?.reason !== undefined) return { ended: 'not started', code: 127, reason: end.reason };
       if (end) return { ended: 'exited', code: end.code };
-      if (!pgid) continue;
-      const group = (options.memoryOf ?? fetchGroupMemory)(pgid);
+      if (!activePgid) continue;
+      const group = (options.memoryOf ?? fetchGroupMemory)(activePgid);
       const bytes = group.reduce((sum, entry) => sum + entry.bytes, 0);
       if (bytes > peakBytes) {
         peakBytes = bytes;
@@ -247,7 +346,7 @@ export const runBounded = async (
         bytes > bounds.memoryBytes ? 'memory ceiling' : Date.now() > deadline ? 'time limit' : null;
       if (!over) continue;
       await stop();
-      await exited;
+      await attempt.exited;
       return {
         ended: over,
         code: over === 'time limit' ? TIME_LIMIT_EXIT_CODE : 137,
@@ -266,35 +365,76 @@ export const runBounded = async (
 /** Run once the lock is held: says so on descriptor 4, then holds until descriptor 3 closes. */
 const HOLDING_UNTIL_CLOSED = 'echo held >&4; exec 4>&-; read _ <&3';
 
-/**
- * Hold the machine's check lock for as long as this process lives, so each `bounded` it starts
- * runs without waiting again: a train waits once, not once per repo. The holder reads descriptor
- * 3, which only this process holds open, so the lock is free the moment the process ends. False
- * when the lock stayed held for the whole wait.
- */
-export const holdCheckLock = async (
-  options: { lockPath?: string; waitSeconds?: number; say?: (line: string) => void } = {},
-): Promise<boolean> => {
-  const path = options.lockPath ?? checkLockPath();
-  const say = options.say ?? ((line: string) => console.error(line));
-  mkdirSync(dirname(path), { recursive: true });
-  const [file = '', ...args] = underLock(
-    path,
-    Math.ceil(options.waitSeconds ?? DEFAULT_BOUNDS.waitSeconds),
-    ['sh', '-c', HOLDING_UNTIL_CLOSED],
-  );
+const tryHoldOneSlot = async (
+  slotPath: string,
+  waitSeconds: number,
+  say?: () => void,
+): Promise<ChildProcess | null> => {
+  const [file = '', ...args] = underLock(slotPath, waitSeconds, ['sh', '-c', HOLDING_UNTIL_CLOSED]);
   const holder = spawn(file, args, { stdio: ['ignore', 'inherit', 'inherit', 'pipe', 'pipe'] });
-  const waiting = setTimeout(
-    () => say(`train: waiting for the machine's check lock (${path})`),
-    5_000,
-  );
+  const waiting = say ? setTimeout(say, 5_000) : null;
   const held = await new Promise<boolean>((done) => {
     holder.stdio[4]?.once('data', () => done(true));
     holder.on('error', () => done(false));
     holder.on('exit', () => done(false));
   });
-  clearTimeout(waiting);
-  if (!held) return false;
+  if (waiting) clearTimeout(waiting);
+  if (!held) {
+    holder.kill();
+    return null;
+  }
+  return holder;
+};
+
+/**
+ * Hold one of the machine's check slots for as long as this process lives, so each `bounded` it
+ * starts runs without waiting again: a train waits once, not once per repo. The holder reads
+ * descriptor 3, which only this process holds open, so the slot is free the moment the process
+ * ends. False when every slot stayed held for the whole wait.
+ */
+export const holdCheckLock = async (
+  options: {
+    lockPath?: string;
+    slots?: number;
+    waitSeconds?: number;
+    say?: (line: string) => void;
+  } = {},
+): Promise<boolean> => {
+  const basePath = options.lockPath ?? checkLockPath();
+  const slots = options.slots ?? (options.lockPath ? 1 : defaultCheckSlots());
+  const slotPaths = checkSlotPaths(basePath, slots);
+  const waitSeconds = options.waitSeconds ?? DEFAULT_BOUNDS.waitSeconds;
+  const say = options.say ?? ((line: string) => console.error(line));
+  mkdirSync(dirname(basePath), { recursive: true });
+
+  let holder: ChildProcess | null = null;
+  if (slotPaths.length === 1) {
+    holder = await tryHoldOneSlot(basePath, Math.ceil(waitSeconds), () =>
+      say(`train: waiting for the machine's check lock (${basePath})`),
+    );
+  } else {
+    const waitStart = Date.now();
+    const waitDeadline = waitStart + waitSeconds * 1000;
+    let announced = false;
+    for (;;) {
+      for (const slotPath of slotPaths) {
+        holder = await tryHoldOneSlot(slotPath, 0);
+        if (holder) break;
+      }
+      if (holder) break;
+      const remainingMs = waitDeadline - Date.now();
+      if (remainingMs <= 0) return false;
+      if (!announced && Date.now() - waitStart >= 5_000) {
+        announced = true;
+        say(
+          `train: waiting for a free check slot (${slotPaths.length} busy under ${dirname(basePath)})`,
+        );
+      }
+      await sleep(Math.min(250, remainingMs));
+    }
+  }
+
+  if (!holder) return false;
   process.on('exit', () => holder.kill());
   holder.unref();
   for (const pipe of [holder.stdio[3], holder.stdio[4]])
