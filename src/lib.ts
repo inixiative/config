@@ -166,7 +166,12 @@ export type Preset = 'base' | 'node' | 'react';
 export type Finding = {
   level: 'error' | 'warn';
   message: string;
-  kind?: 'stale-lock' | 'ecosystem-range' | 'member-toolchain' | 'toolchain-lock';
+  kind?:
+    | 'stale-lock'
+    | 'ecosystem-range'
+    | 'ecosystem-ahead'
+    | 'member-toolchain'
+    | 'toolchain-lock';
   name?: string;
   /** For ecosystem findings: the package the range or lock answers to (an alias's target). */
   target?: string;
@@ -1120,6 +1125,20 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
           candidate === blessed
             ? `candidate ${candidate}`
             : `blessed ${blessed}${candidate ? ` or candidate ${candidate}` : ''}`;
+        // A range whose floor is above everything recorded names a release its lane has not
+        // recorded yet. Lowering it would take away code the repo already uses; only a hold may.
+        const floor = parseRange(range.trim())?.version;
+        const newest = candidate && compare(candidate, blessed) > 0 ? candidate : blessed;
+        if (ok === false && floor && compare(floor, newest) > 0 && !holdOf(manifest, name, floor)) {
+          findings.push({
+            level: 'error',
+            kind: 'ecosystem-ahead',
+            name,
+            target: name,
+            message: `${target.label}${key} ${field} range ${spec} is ahead of ${accepted}; never lowered → record ${name}@${floor} on its lane's train`,
+          });
+          continue;
+        }
         if (ok === false) {
           // An exact pin is a choice to pin: move the pin, never loosen it to a range.
           const next = /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(range) ? blessed : `^${blessed}`;
