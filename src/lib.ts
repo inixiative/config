@@ -367,11 +367,19 @@ export const peerFloor = (pin: string): string => {
 /** A peer range that admits a major below the pin's claims support the toolchain never tests. */
 const admitsOlderMajor = (range: string, pin: string): boolean => {
   const pinMajor = Number(pin.split('.')[0]);
-  return range.split('||').some((part) => {
-    const parsed = parseRange(part.trim());
-    return !!parsed && Number(parsed.version.split('.')[0]) < pinMajor;
-  });
+  return rangeFloors(range).some((floor) => Number(floor.split('.')[0]) < pinMajor);
 };
+
+/** The floor of each understood `||` part of a range. */
+const rangeFloors = (range: string): string[] =>
+  range.split('||').flatMap((part) => parseRange(part.trim())?.version ?? []);
+
+/** The highest floor across a range's `||` parts; undefined when no part is understood. */
+const highestFloor = (range: string): string | undefined =>
+  rangeFloors(range).reduce<string | undefined>(
+    (top, floor) => (!top || compare(floor, top) > 0 ? floor : top),
+    undefined,
+  );
 
 /** `npm:<name>@<range>` → its parts; any other spec → null. */
 export const npmAlias = (spec: string): { name: string; range: string } | null => {
@@ -1125,11 +1133,12 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
           candidate === blessed
             ? `candidate ${candidate}`
             : `blessed ${blessed}${candidate ? ` or candidate ${candidate}` : ''}`;
-        // A range whose floor is above everything recorded names a release its lane has not
-        // recorded yet. Lowering it would take away code the repo already uses; only a hold may.
-        const floor = parseRange(range.trim())?.version;
-        const newest = candidate && compare(candidate, blessed) > 0 ? candidate : blessed;
-        if (ok === false && floor && compare(floor, newest) > 0 && !holdOf(manifest, name, floor)) {
+        // A range whose floor is above blessed names code the repo already uses; rewriting it
+        // to blessed would take that away. Only a hold may lower it.
+        const floor = highestFloor(range);
+        const ahead =
+          ok === false && !!floor && compare(floor, blessed) > 0 && !holdOf(manifest, name, floor);
+        if (ahead) {
           findings.push({
             level: 'error',
             kind: 'ecosystem-ahead',
@@ -1137,9 +1146,8 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
             target: name,
             message: `${target.label}${key} ${field} range ${spec} is ahead of ${accepted}; never lowered → record ${name}@${floor} on its lane's train`,
           });
-          continue;
         }
-        if (ok === false) {
+        if (ok === false && !ahead) {
           // An exact pin is a choice to pin: move the pin, never loosen it to a range.
           const next = /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(range) ? blessed : `^${blessed}`;
           findings.push({
@@ -1179,7 +1187,7 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
             path: target.path,
             message: `${target.label}${key} locked at ${locked}, violating declared ${spec} (stale lockfile) → re-lock`,
           });
-        } else if (locked && !lockAccepted) {
+        } else if (locked && !lockAccepted && !ahead) {
           staleKeys.add(key);
           findings.push({
             level: 'error',
