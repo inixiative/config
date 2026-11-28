@@ -478,20 +478,41 @@ describe('candidates', () => {
     expect(archiveFindings(app('^0.2.1', '0.2.5'), withCandidate())).toEqual([]);
   });
 
-  test('a version newer than the candidate, or older than blessed, is still drift', () => {
-    expect(archiveFindings(app('^0.4.0', '0.4.0'), withCandidate())).toEqual([
-      '@inixiative/archive dependencies range ^0.4.0 does not admit blessed 0.2.1 or candidate 0.3.0 → ^0.2.1',
-      '@inixiative/archive locked at 0.4.0, blessed is 0.2.1 or candidate 0.3.0 → re-lock',
+  test('a version newer than the candidate is flagged ahead, never lowered; older than blessed is drift', () => {
+    const ahead = inspect(app('^0.4.0', '0.4.0'), withCandidate()).findings.filter(
+      (finding) => finding.target === '@inixiative/archive',
+    );
+    expect(ahead.map((finding) => finding.message)).toEqual([
+      "@inixiative/archive dependencies range ^0.4.0 is ahead of blessed 0.2.1 or candidate 0.3.0; never lowered → record @inixiative/archive@0.4.0 on its lane's train",
+    ]);
+    expect(ahead[0]?.kind).toBe('ecosystem-ahead');
+    expect(ahead[0]?.fix).toBeUndefined();
+    expect(archiveFindings(app('0.4.0', '0.4.0'), bom())).toEqual([
+      "@inixiative/archive dependencies range 0.4.0 is ahead of blessed 0.2.1; never lowered → record @inixiative/archive@0.4.0 on its lane's train",
     ]);
     expect(archiveFindings(app('^0.2.0', '0.2.0'), withCandidate())).toEqual([
       '@inixiative/archive locked at 0.2.0, blessed is 0.2.1 or candidate 0.3.0 → re-lock',
     ]);
   });
 
-  test('without a candidate, only the blessed version passes', () => {
+  test('a floor between blessed and the candidate is ahead too, never lowered to blessed', () => {
+    const ahead = (range: string, locked?: string) =>
+      archiveFindings(app(range, locked), withCandidate());
+    const message = (range: string, floor: string) =>
+      `@inixiative/archive dependencies range ${range} is ahead of blessed 0.2.1 or candidate 0.3.0; never lowered → record @inixiative/archive@${floor} on its lane's train`;
+    expect(ahead('0.2.5', '0.2.5')).toEqual([message('0.2.5', '0.2.5')]);
+    expect(ahead('^0.2.5', '0.2.5')).toEqual([message('^0.2.5', '0.2.5')]);
+    expect(ahead('~0.2.5', '0.2.5')).toEqual([message('~0.2.5', '0.2.5')]);
+    expect(ahead('^0.4.0 || ^0.5.0', '0.5.0')).toEqual([message('^0.4.0 || ^0.5.0', '0.5.0')]);
+    expect(ahead('^0.2.5', '0.2.2')).toEqual([
+      message('^0.2.5', '0.2.5'),
+      '@inixiative/archive locked at 0.2.2, violating declared ^0.2.5 (stale lockfile) → re-lock',
+    ]);
+  });
+
+  test('without a candidate, only the blessed version passes; a range above it waits to be recorded', () => {
     expect(archiveFindings(app('^0.3.0', '0.3.0'), bom())).toEqual([
-      '@inixiative/archive dependencies range ^0.3.0 does not admit blessed 0.2.1 → ^0.2.1',
-      '@inixiative/archive locked at 0.3.0, blessed is 0.2.1 → re-lock',
+      "@inixiative/archive dependencies range ^0.3.0 is ahead of blessed 0.2.1; never lowered → record @inixiative/archive@0.3.0 on its lane's train",
     ]);
   });
 
