@@ -21,7 +21,8 @@
     "@inixiative/rules-builder": "0.35.0",
     "@inixiative/prisma-map": "0.4.1",
     "@inixiative/atlas": "0.4.1",
-    "@inixiative/gloss": "0.1.1"
+    "@inixiative/gloss": "0.1.1",
+    "@inixiative/api-client": "0.1.0"
   },
   "agentic": {
     "@inixiative/signet": "0.29.0",
