@@ -15,6 +15,9 @@ import {
 import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { appendGitignoreLine, STANDARDS_PREPARE } from './standards';
+
+export { STANDARDS_PREPARE } from './standards';
 
 export const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -912,12 +915,7 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
       findings.push({
         level: 'error',
         message: 'tmp/ is not gitignored → adding /tmp/* to .gitignore',
-        fix: () => {
-          const gitignorePath = join(dir, '.gitignore');
-          const current = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf8') : '';
-          const separator = current === '' || current.endsWith('\n') ? '' : '\n';
-          writeFileSync(gitignorePath, `${current}${separator}/tmp/*\n`);
-        },
+        fix: () => appendGitignoreLine(dir, '/tmp/*'),
       });
     }
 
@@ -998,13 +996,17 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
       });
     }
     const prepare = pkg.scripts?.prepare;
+    const expectedPrepare =
+      pkg.name === '@inixiative/config'
+        ? LEFTHOOK_PREPARE
+        : `${LEFTHOOK_PREPARE} && ${STANDARDS_PREPARE}`;
     if (!prepare) {
       findings.push({
         level: 'error',
-        message: `scripts.prepare missing → "${LEFTHOOK_PREPARE}"`,
+        message: `scripts.prepare missing → "${expectedPrepare}"`,
         fix: () => {
           pkg.scripts ??= {};
-          pkg.scripts.prepare = LEFTHOOK_PREPARE;
+          pkg.scripts.prepare = expectedPrepare;
           touch();
         },
       });
@@ -1022,6 +1024,27 @@ export function inspect(dir: string, manifest: Manifest, presetOverride?: Preset
       findings.push({
         level: 'warn',
         message: 'scripts.prepare does not run lefthook install — hooks will not auto-install',
+      });
+    }
+    if (pkg.name !== '@inixiative/config' && prepare && !prepare.includes(STANDARDS_PREPARE)) {
+      findings.push({
+        level: 'error',
+        message: `scripts.prepare does not sync shared standards/skills → "${STANDARDS_PREPARE}"`,
+        fix: () => {
+          pkg.scripts ??= {};
+          const current = pkg.scripts.prepare;
+          if (!current) {
+            pkg.scripts.prepare = expectedPrepare;
+          } else if (current.includes('inixiative-config standards')) {
+            pkg.scripts.prepare = current.replace(
+              /if [^;]*; then [^;]*inixiative-config standards; fi|(?:(?:bun|bunx)\s+)?(?:\.\/node_modules\/\.bin\/)?inixiative-config standards/,
+              STANDARDS_PREPARE,
+            );
+          } else {
+            pkg.scripts.prepare = `${current} && ${STANDARDS_PREPARE}`;
+          }
+          touch();
+        },
       });
     }
   }

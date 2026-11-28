@@ -1,0 +1,16 @@
+{
+  "experiment": "<short name, as in the design title>",
+  "layer": "region-shape | corpus | recognition | selection | model | delivery | cost | routing",
+  "change": "<what differed from the baseline: the design's Variable, one line>",
+  "fixtures": {
+    "set": "<path or name>",
+    "n_pos": 0,
+    "n_neg": 0,
+    "period": "train | test | synthetic"
+  },
+  "metrics": { "<name>": 0 },
+  "baseline": { "ref": "<run id>", "metrics": { "<name>": 0 } },
+  "regions": "<regions content hash or set id>",
+  "date": "YYYY-MM-DD",
+  "notes": "<one or two lines: CI, n, load, window points spent; the design path and its design-sha256>"
+}

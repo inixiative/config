@@ -53,6 +53,7 @@ import {
 } from './lib';
 import { type Project, portsFor, projects } from './ports';
 import { checkRetiredTerms, writeRetiredTermsBaseline } from './retiredTerms';
+import { inspectStandards, resolveStandardsProfiles, syncStandards } from './standards';
 
 let commandLine: CommandLine;
 try {
@@ -61,7 +62,7 @@ try {
   if (!(error instanceof UsageError)) throw error;
   console.error(`✗ ${error.message}`);
   console.error(
-    'Usage: inixiative-config check [dir] [--preset=base|node|react]\n       inixiative-config sync [dir] [--preset=base|node|react] [--force] [--no-install]\n       inixiative-config scan [root] [--lane=primitives|agentic]\n       inixiative-config train [root] [--lane=primitives|agentic] [--push] [--dry-run]\n       inixiative-config ports [project]\n       inixiative-config terms [dir] [--write-baseline]\n       inixiative-config bounded [--minutes=40] [--memory-gb=12] [--wait-minutes=240] -- <command…>',
+    'Usage: inixiative-config check [dir] [--preset=base|node|react]\n       inixiative-config sync [dir] [--preset=base|node|react] [--force] [--no-install]\n       inixiative-config standards [dir] [--check]\n       inixiative-config scan [root] [--lane=primitives|agentic]\n       inixiative-config train [root] [--lane=primitives|agentic] [--push] [--dry-run]\n       inixiative-config ports [project]\n       inixiative-config terms [dir] [--write-baseline]\n       inixiative-config bounded [--minutes=40] [--memory-gb=12] [--wait-minutes=240] -- <command…>',
   );
   process.exit(2);
 }
@@ -181,9 +182,66 @@ const offDefaultBranch = (cwd: string): { branch: string; main: string } | null 
   return current === main ? null : { branch: current, main };
 };
 
+const standardsFindingsFor = (targetDir: string): Finding[] => {
+  const pkgPath = join(targetDir, 'package.json');
+  if (!existsSync(pkgPath) || !existsSync(join(targetDir, '.git'))) return [];
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
+    name?: string;
+    inixiative?: { profiles?: unknown };
+  };
+  return inspectStandards(targetDir, pkg, packageRoot, { gitRepo: true });
+};
+
 if (command === 'check') {
   const { findings } = inspect(dir, manifest, presetFlag);
-  process.exit(report([...findings, ...checkRetiredTerms(dir).findings]) > 0 ? 1 : 0);
+  process.exit(
+    report([...findings, ...standardsFindingsFor(dir), ...checkRetiredTerms(dir).findings]) > 0
+      ? 1
+      : 0,
+  );
+}
+
+if (command === 'standards') {
+  const pkgPath = join(dir, 'package.json');
+  if (!existsSync(pkgPath)) {
+    console.error(`✗ no package.json in ${dir}`);
+    process.exit(1);
+  }
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
+    name?: string;
+    inixiative?: { profiles?: unknown };
+  };
+  if (pkg.name === '@inixiative/config') {
+    console.log('✓ @inixiative/config owns standards/ and skills/ directly');
+    process.exit(0);
+  }
+  if (commandLine.checkOnly) {
+    const findings = inspectStandards(dir, pkg, packageRoot, {
+      gitRepo: existsSync(join(dir, '.git')),
+    });
+    process.exit(report(findings) > 0 ? 1 : 0);
+  }
+  const { profiles, error } = resolveStandardsProfiles(pkg);
+  if (error) {
+    console.error(`✗ ${error}`);
+    process.exit(1);
+  }
+  try {
+    const { written, removed } = syncStandards(dir, packageRoot, profiles);
+    if (written.length === 0 && removed.length === 0) {
+      console.log('✓ standards in sync');
+    } else {
+      const parts = [
+        written.length > 0 ? `${written.length} updated` : null,
+        removed.length > 0 ? `${removed.length} unused removed` : null,
+      ].filter(Boolean);
+      console.log(`✓ standards synced (${parts.join(', ')})`);
+    }
+  } catch (err) {
+    console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+  process.exit(0);
 }
 
 if (command === 'terms') {
@@ -1333,9 +1391,10 @@ if (existsSync(join(dir, '.git')) && !commandLine.force) {
 }
 
 const first = inspect(dir, manifest, presetFlag);
-for (const finding of first.findings) finding.fix?.();
+const firstStandards = standardsFindingsFor(dir);
+for (const finding of [...first.findings, ...firstStandards]) finding.fix?.();
 first.flush();
-const fixed = first.findings.filter((finding) => finding.fix).length;
+const fixed = [...first.findings, ...firstStandards].filter((finding) => finding.fix).length;
 if (fixed > 0) console.log(`applied ${fixed} fix${fixed === 1 ? '' : 'es'}`);
 
 if (!commandLine.noInstall) {
@@ -1370,8 +1429,12 @@ if (!commandLine.noInstall) {
 }
 
 const final = inspect(dir, manifest, presetFlag);
-const remaining = final.findings.filter((finding) => finding.fix);
+const finalStandards = standardsFindingsFor(dir);
+const remaining = [...final.findings, ...finalStandards].filter((finding) => finding.fix);
 for (const finding of remaining) finding.fix?.();
 final.flush();
-const settled = remaining.length > 0 ? inspect(dir, manifest, presetFlag) : final;
-process.exit(report(settled.findings) > 0 ? 1 : 0);
+const settled =
+  remaining.length > 0
+    ? [...inspect(dir, manifest, presetFlag).findings, ...standardsFindingsFor(dir)]
+    : [...final.findings, ...finalStandards];
+process.exit(report(settled) > 0 ? 1 : 0);

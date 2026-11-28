@@ -1,0 +1,24 @@
+{
+  "probe": "",
+  "run": "",
+  "question": "",
+  "varied": {},
+  "fixed": {},
+  "environment": {
+    "date": "",
+    "machine": {
+      "cores": 0,
+      "load1": { "start": 0, "median": 0, "max": 0 },
+      "ownCpuPct": { "median": 0 },
+      "outsideCpuPct": { "median": 0, "max": 0 }
+    },
+    "versions": { "claudeCode": "", "agentSession": "", "foundry": "", "harness": "" },
+    "models": [],
+    "login": { "sevenDayBefore": 0, "sevenDayAfter": 0 },
+    "baseline": { "ref": "", "setupMs": 0, "reloadMs": 0, "comparable": true }
+  },
+  "measures": {},
+  "n": 0,
+  "cost": { "listUsd": 0, "how": "" },
+  "notMeasured": []
+}

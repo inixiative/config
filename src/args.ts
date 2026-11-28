@@ -1,7 +1,16 @@
 import { type ParseArgsConfig, parseArgs } from 'node:util';
 import { isLane, type Lane, type Preset } from './lib';
 
-export const COMMANDS = ['check', 'sync', 'scan', 'train', 'ports', 'terms', 'bounded'] as const;
+export const COMMANDS = [
+  'check',
+  'sync',
+  'standards',
+  'scan',
+  'train',
+  'ports',
+  'terms',
+  'bounded',
+] as const;
 export type Command = (typeof COMMANDS)[number];
 
 const PRESETS: readonly Preset[] = ['base', 'node', 'react'];
@@ -14,6 +23,7 @@ const flag = { type: 'boolean', default: false } as const;
 const OPTIONS = {
   check: { preset },
   sync: { preset, force: flag, 'no-install': flag },
+  standards: { check: flag },
   scan: { lane },
   train: { lane, push: flag, 'dry-run': flag, 'adopt-check-timeout': { type: 'string' } },
   ports: {},
@@ -34,6 +44,8 @@ export type CommandLine = {
   noInstall: boolean;
   push: boolean;
   dryRun: boolean;
+  /** `standards` only: verify without writing files. */
+  checkOnly: boolean;
   /** Seconds the check after `train:adopt` may run before it counts as failed. */
   adoptCheckTimeout: number;
   writeBaseline: boolean;
@@ -116,6 +128,7 @@ export const parseCommandLine = (argv: string[]): CommandLine => {
     noInstall: values['no-install'] === true,
     push: values.push === true,
     dryRun: values['dry-run'] === true,
+    checkOnly: values.check === true,
     adoptCheckTimeout,
     writeBaseline: values['write-baseline'] === true,
     bounds,

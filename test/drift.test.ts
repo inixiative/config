@@ -20,6 +20,7 @@ import {
   lockedVersion,
   parseJsonc,
   peerFloor,
+  STANDARDS_PREPARE,
   staleUpdates,
 } from '../src/lib';
 
@@ -232,7 +233,7 @@ describe('lefthook standardization', () => {
 
     const pkg = readPkg(dir);
     expect(pkg.devDependencies.lefthook).toBe('2.1.9');
-    expect(pkg.scripts.prepare).toBe(LEFTHOOK_PREPARE);
+    expect(pkg.scripts.prepare).toBe(`${LEFTHOOK_PREPARE} && ${STANDARDS_PREPARE}`);
     expect(readFileSync(join(dir, 'lefthook.yml'), 'utf8')).toContain(
       'node_modules/@inixiative/config/lefthook/base.yml',
     );
@@ -257,7 +258,7 @@ describe('lefthook standardization', () => {
 
     expect(readPkg(dir).scripts.prepare).toBe(`${LEFTHOOK_PREPARE} && bun run build`);
     const residual = inspect(dir, manifest).findings.map((finding) => finding.message);
-    expect(residual).not.toContainEqual(expect.stringContaining('prepare'));
+    expect(residual).not.toContainEqual(expect.stringContaining('main-checkout guard'));
   });
 
   test('upgrades the older git-only guard to the main-checkout guard without nesting it', () => {
@@ -276,7 +277,7 @@ describe('lefthook standardization', () => {
 
     expect(readPkg(dir).scripts.prepare).toBe(LEFTHOOK_PREPARE);
     const residual = inspect(dir, manifest).findings.map((finding) => finding.message);
-    expect(residual).not.toContainEqual(expect.stringContaining('prepare'));
+    expect(residual).not.toContainEqual(expect.stringContaining('main-checkout guard'));
   });
 
   test('prepare installs hooks with the main checkout lefthook from every worktree, and never without git', () => {
